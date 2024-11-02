@@ -32,19 +32,19 @@ template<int D> struct fwd_globals {
     using v_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
-
+    using bias_tile =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>;
     using q_gl = gl<bf16,  -1, -1, -1, -1, q_tile>;
     using k_gl = gl<bf16,  -1, -1, -1, -1, k_tile>;
     using v_gl = gl<bf16,  -1, -1, -1, -1, v_tile>;
     using l_gl = gl<float, -1, -1, -1, -1, l_col_vec>;
     using o_gl = gl<bf16,  -1, -1, -1, -1, o_tile>;
-
+    using bias_gl = gl<bf16, -1, -1, -1, -1, bias_tile>;
     q_gl q;
     k_gl k;
     v_gl v;
     l_gl l;
     o_gl o;
-
+    bias_gl b;
     const int N; 
     const int hr;
 };

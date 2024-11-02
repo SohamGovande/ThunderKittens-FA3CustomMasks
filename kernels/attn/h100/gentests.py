@@ -3,8 +3,8 @@ from tqdm import trange
 import numpy as np
 import sys
 import math
-
-# pip install "grouped-query-attention-pytorch @ git+ssh://git@github.com/fkodom/grouped-query-attention-pytorch.git"
+from torch.nn.functional import scaled_dot_product_attention
+# pip install git+https://github.com/fkodom/grouped-query-attention-pytorch.git
 from grouped_query_attention_pytorch.attention import scaled_dot_product_gqa
 
 # only generate a single batch/head of data, which makes file loading much faster.
@@ -16,23 +16,28 @@ D = int(sys.argv[2])
 H_QO = int(sys.argv[3])
 H_KV = int(sys.argv[4])
 
-causal = True
+causal = False
 
 torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
+mask = (torch.randint(0, 2, (1, 1, N, N), dtype=torch.bool, device='cuda'))
+mask.requires_grad_(False)
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
 
+bias = torch.where(mask, 0.0, -torch.inf).requires_grad_(False).contiguous()
+
 # pad seqlen to multiple of 128
-o, _ = scaled_dot_product_gqa(
-    q.permute(0, 2, 1, 3).contiguous(),
-    k.permute(0, 2, 1, 3).contiguous(),
-    v.permute(0, 2, 1, 3).contiguous(),
-    is_causal=causal,
-    need_weights=False,
-)
-o = o.permute(0, 2, 1, 3).contiguous()
+o = scaled_dot_product_attention(q, k, v, mask, is_causal=causal, dropout_p=0.0)
+# o, _ = scaled_dot_product_gqa(
+#     q.permute(0, 2, 1, 3).contiguous(),
+#     k.permute(0, 2, 1, 3).contiguous(),
+#     v.permute(0, 2, 1, 3).contiguous(),
+#     is_causal=causal,
+#     need_weights=False,
+# )
+# o = o.permute(0, 2, 1, 3).contiguous()
 
 ##########################################
 ### EXACT GQA COMPUTATION FROM LLAMA 3 ###
@@ -151,6 +156,9 @@ with open(filename, 'w') as f:
         f.write(' ')
     for i in trange(v.shape[0] * v.shape[1] * v.shape[2] * v.shape[3]):
         f.write(repr(float(vf[i])))
+        f.write(' ')
+    for i in trange(bias.shape[0] * bias.shape[1] * bias.shape[2] * bias.shape[3]):
+        f.write(repr(float(bias[i])))
         f.write(' ')
     for i in trange(o.shape[0] * o.shape[1] * o.shape[2] * o.shape[3]):
         f.write(repr(float(of[i])))
