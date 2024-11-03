@@ -2,94 +2,103 @@
 #include <string>
 #include <fstream>
 
-constexpr int ATTN_B     = 16;
-constexpr int QO_HEADS   = 16;
-constexpr int KV_HEADS   = 16;
+constexpr int ATTN_B = 16;
+constexpr int QO_HEADS = 16;
+constexpr int KV_HEADS = 16;
 
-constexpr int QK_HEAD_RATIO = (QO_HEADS)/(KV_HEADS);
+constexpr int QK_HEAD_RATIO = (QO_HEADS) / (KV_HEADS);
 static_assert(QO_HEADS >= KV_HEADS && QO_HEADS % KV_HEADS == 0);
 
-constexpr int ATTN_N     = 768*16; 
-constexpr int ATTN_D     = 128; 
-constexpr int BLOCK_SIZE = (32*NUM_WORKERS); 
-constexpr int ITER       = 10; 
+constexpr int ATTN_N = 768 * 16;
+constexpr int ATTN_D = 128;
+constexpr int BLOCK_SIZE = (32 * NUM_WORKERS);
+constexpr int ITER = 10;
 
-constexpr bool causal    = true; 
+constexpr bool causal = true;
 
-#define CudaCheckError()    __cudaCheckError( __FILE__, __LINE__ )
-inline void __cudaCheckError( const char *file, const int line ) {
+#define CudaCheckError() __cudaCheckError(__FILE__, __LINE__)
+inline void __cudaCheckError(const char *file, const int line)
+{
     cudaError err = cudaGetLastError();
-    if ( cudaSuccess != err )
+    if (cudaSuccess != err)
     {
-        fprintf( stderr, "cudaCheckError() failed at %s:%i : %s\n",
-                 file, line, cudaGetErrorString( err ) );
-        exit( -1 );
+        fprintf(stderr, "cudaCheckError() failed at %s:%i : %s\n",
+                file, line, cudaGetErrorString(err));
+        exit(-1);
     }
     // More careful checking. However, this will affect performance.
     // Comment away if needed.
     err = cudaDeviceSynchronize();
-    if( cudaSuccess != err )
+    if (cudaSuccess != err)
     {
-        fprintf( stderr, "cudaCheckError() with sync failed at %s:%i : %s\n",
-                 file, line, cudaGetErrorString( err ) );
-        exit( -1 );
+        fprintf(stderr, "cudaCheckError() with sync failed at %s:%i : %s\n",
+                file, line, cudaGetErrorString(err));
+        exit(-1);
     }
 }
 
 // Function to calculate the number of floating-point operations
-long long flops(int batch, int seqlen, int headdim, int nheads, bool causal, const std::string& mode) {
+long long flops(int batch, int seqlen, int headdim, int nheads, bool causal, const std::string &mode)
+{
     assert(mode == "fwd" || mode == "bwd" || mode == "fwd_bwd");
     long long f = 4 * batch * static_cast<long long>(seqlen) * seqlen * nheads * headdim;
     f /= (causal ? 2 : 1);
 
-    if (mode == "fwd") {
+    if (mode == "fwd")
+    {
         return f;
-    } else if (mode == "bwd") {
+    }
+    else if (mode == "bwd")
+    {
         return static_cast<long long>(2.5 * f);
-    } else { // fwd_bwd
+    }
+    else
+    { // fwd_bwd
         return static_cast<long long>(3.5 * f);
     }
 }
 
 // Function to calculate the efficiency in teraflops
-double efficiency(long long flop, double time) {
+double efficiency(long long flop, double time)
+{
     // Convert flop to teraflops and time to milliseconds
     double tflops = flop / 1e12;
     double time_ms = time / 1e6;
     return tflops / time_ms;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     std::cout << "Entered main!" << std::endl;
 
     // create dummy variables that are the right size
-    constexpr int TOTAL_ELEMENTS_QO     = ATTN_B*QO_HEADS*ATTN_N*ATTN_D;
-    constexpr int TOTAL_ELEMENTS_KV     = ATTN_B*KV_HEADS*ATTN_N*ATTN_D;
-    constexpr int TOTAL_UNIQUE_ELEMENTS = ATTN_N*ATTN_D; 
-    constexpr int TOTAL_ELEMENTS_BIAS   = ATTN_N*ATTN_N;
+    constexpr int TOTAL_ELEMENTS_QO = ATTN_B * QO_HEADS * ATTN_N * ATTN_D;
+    constexpr int TOTAL_ELEMENTS_KV = ATTN_B * KV_HEADS * ATTN_N * ATTN_D;
+    constexpr int TOTAL_UNIQUE_ELEMENTS = ATTN_N * ATTN_D;
+    constexpr int TOTAL_ELEMENTS_BIAS = ATTN_N * ATTN_N;
 
-    float *q      = new float[TOTAL_ELEMENTS_QO];
-    float *k      = new float[TOTAL_ELEMENTS_KV];
-    float *v      = new float[TOTAL_ELEMENTS_KV];
-    float *o_ref  = new float[TOTAL_ELEMENTS_QO];
-    float *l_ref  = new float[TOTAL_ELEMENTS_QO/ATTN_D];
-    float *bias   = new float[TOTAL_ELEMENTS_BIAS];
-    float *og     = new float[TOTAL_ELEMENTS_QO];
-    float *d_ref  = new float[TOTAL_ELEMENTS_QO/ATTN_D];
+    float *q = new float[TOTAL_ELEMENTS_QO];
+    float *k = new float[TOTAL_ELEMENTS_KV];
+    float *v = new float[TOTAL_ELEMENTS_KV];
+    float *o_ref = new float[TOTAL_ELEMENTS_QO];
+    float *l_ref = new float[TOTAL_ELEMENTS_QO / ATTN_D];
+    float *bias = new float[TOTAL_ELEMENTS_BIAS];
+    float *og = new float[TOTAL_ELEMENTS_QO];
+    float *d_ref = new float[TOTAL_ELEMENTS_QO / ATTN_D];
 
     float *qg_ref = new float[TOTAL_ELEMENTS_QO];
     float *kg_ref = new float[TOTAL_ELEMENTS_KV];
     float *vg_ref = new float[TOTAL_ELEMENTS_KV];
 
-    bf16  *q_bf = new bf16[TOTAL_ELEMENTS_QO];
-    bf16  *k_bf = new bf16[TOTAL_ELEMENTS_KV];
-    bf16  *v_bf = new bf16[TOTAL_ELEMENTS_KV];
-    bf16  *o_bf = new bf16[TOTAL_ELEMENTS_QO];
-    bf16  *bias_bf = new bf16[TOTAL_ELEMENTS_BIAS];
-    float *l_fl = new float[TOTAL_ELEMENTS_QO/ATTN_D];
+    bf16 *q_bf = new bf16[TOTAL_ELEMENTS_QO];
+    bf16 *k_bf = new bf16[TOTAL_ELEMENTS_KV];
+    bf16 *v_bf = new bf16[TOTAL_ELEMENTS_KV];
+    bf16 *o_bf = new bf16[TOTAL_ELEMENTS_QO];
+    bf16 *bias_bf = new bf16[TOTAL_ELEMENTS_BIAS];
+    float *l_fl = new float[TOTAL_ELEMENTS_QO / ATTN_D];
 
-    bf16 *og_bf  = new bf16[TOTAL_ELEMENTS_QO];
-    float *d_fl  = new float[TOTAL_ELEMENTS_QO/ATTN_D]; 
+    bf16 *og_bf = new bf16[TOTAL_ELEMENTS_QO];
+    float *d_fl = new float[TOTAL_ELEMENTS_QO / ATTN_D];
 
     float *qg_fl = new float[TOTAL_ELEMENTS_QO];
     float *kg_fl = new float[TOTAL_ELEMENTS_KV];
@@ -97,10 +106,10 @@ int main(int argc, char **argv) {
 
     // fwd outputs
     float *o = new float[TOTAL_ELEMENTS_QO];
-    float *l = new float[TOTAL_ELEMENTS_QO/ATTN_D];
+    float *l = new float[TOTAL_ELEMENTS_QO / ATTN_D];
 
     // bwd intermediate
-    float *d = new float[TOTAL_ELEMENTS_QO/ATTN_D];
+    float *d = new float[TOTAL_ELEMENTS_QO / ATTN_D];
 
     // bwd outputs
     float *qg = new float[TOTAL_ELEMENTS_QO];
@@ -111,47 +120,68 @@ int main(int argc, char **argv) {
 
     std::cout << "Starting to enter!" << std::endl;
 
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_B; i++) infile >> q[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+        infile >> q[i];
     std::cout << "Finished loading Q" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_KV/ATTN_B; i++) infile >> k[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+        infile >> k[i];
     std::cout << "Finished loading K" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_KV/ATTN_B; i++) infile >> v[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+        infile >> v[i];
     std::cout << "Finished loading V" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++) infile >> bias[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++)
+        infile >> bias[i];
     std::cout << "Finished loading BIAS" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_B; i++) infile >> o_ref[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+        infile >> o_ref[i];
     std::cout << "Finished loading O_REF" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/(ATTN_D*ATTN_B); i++) infile >> l_ref[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++)
+        infile >> l_ref[i];
     std::cout << "Finished loading L_REF" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/(ATTN_D*ATTN_B); i++) infile >> d_ref[i];
-    std::cout << "Finished loading D_REF" << std::endl; 
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_B; i++) infile >> og[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++)
+        infile >> d_ref[i];
+    std::cout << "Finished loading D_REF" << std::endl;
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+        infile >> og[i];
     std::cout << "Finished loading OG" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_B; i++) infile >> qg_ref[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+        infile >> qg_ref[i];
     std::cout << "Finished loading QG_REF" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_KV/ATTN_B; i++) infile >> kg_ref[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+        infile >> kg_ref[i];
     std::cout << "Finished loading KG_REF" << std::endl;
-    for(int i = 0; i < TOTAL_ELEMENTS_KV/ATTN_B; i++) infile >> vg_ref[i];
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+        infile >> vg_ref[i];
     std::cout << "Finished loading VG_REF" << std::endl;
 
     std::cout << "Finished loading file from " << argv[1] << "!" << std::endl;
-    
+
     // replicate into batch
-    for (int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
-        q_bf[i] = __float2bfloat16(q[i % (TOTAL_ELEMENTS_QO/ATTN_B)]);
-        og_bf[i] = __float2bfloat16(og[i % (TOTAL_ELEMENTS_QO/ATTN_B)]);
+    for (int i = 0; i < TOTAL_ELEMENTS_QO; i++)
+    {
+        q_bf[i] = __float2bfloat16(q[i % (TOTAL_ELEMENTS_QO / ATTN_B)]);
+        og_bf[i] = __float2bfloat16(og[i % (TOTAL_ELEMENTS_QO / ATTN_B)]);
         qg_fl[i] = 0.0f;
     }
-    for (int i = 0; i < TOTAL_ELEMENTS_KV; i++) {
-        k_bf[i] = __float2bfloat16(k[i % (TOTAL_ELEMENTS_KV/ATTN_B)]);
-        v_bf[i] = __float2bfloat16(v[i % (TOTAL_ELEMENTS_KV/ATTN_B)]);
+    for (int i = 0; i < TOTAL_ELEMENTS_KV; i++)
+    {
+        k_bf[i] = __float2bfloat16(k[i % (TOTAL_ELEMENTS_KV / ATTN_B)]);
+        v_bf[i] = __float2bfloat16(v[i % (TOTAL_ELEMENTS_KV / ATTN_B)]);
 
         kg_fl[i] = 0.0f;
         vg_fl[i] = 0.0f;
     }
-    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++) {
+    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++)
+    {
         bias_bf[i] = __float2bfloat16(bias[i]);
     }
+
+    std::cout << "First few elements of bias_bf: ";
+    for (int i = 0; i < 100; i++)
+    {
+        std::cout << __bfloat162float(bias_bf[i]) << " ";
+    }
+    std::cout << std::endl;
 
     bf16 *d_q, *d_k, *d_v, *d_o, *d_og, *d_bias;
     float *d_l, *d_d;
@@ -162,9 +192,9 @@ int main(int argc, char **argv) {
     cudaMalloc(&d_v, (TOTAL_ELEMENTS_KV) * sizeof(bf16));
     cudaMalloc(&d_o, (TOTAL_ELEMENTS_QO) * sizeof(bf16));
     cudaMalloc(&d_bias, (TOTAL_ELEMENTS_BIAS) * sizeof(bf16));
-    
-    cudaMalloc(&d_l, (TOTAL_ELEMENTS_QO/ATTN_D) * sizeof(float));
-    cudaMalloc(&d_d, (TOTAL_ELEMENTS_QO/ATTN_D) * sizeof(float)); 
+
+    cudaMalloc(&d_l, (TOTAL_ELEMENTS_QO / ATTN_D) * sizeof(float));
+    cudaMalloc(&d_d, (TOTAL_ELEMENTS_QO / ATTN_D) * sizeof(float));
 
     cudaMalloc(&d_og, (TOTAL_ELEMENTS_QO) * sizeof(bf16));
     cudaMalloc(&d_qg, (TOTAL_ELEMENTS_QO) * sizeof(float));
@@ -181,52 +211,53 @@ int main(int argc, char **argv) {
     cudaMemcpy(d_kg, kg_fl, TOTAL_ELEMENTS_KV * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_vg, vg_fl, TOTAL_ELEMENTS_KV * sizeof(float), cudaMemcpyHostToDevice);
 
-    using q_tile    =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
-    using k_tile    =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::kv_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
-    using v_tile    =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::kv_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
+    using q_tile = st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
+    using k_tile = st_bf<fwd_attend_ker_tile_dims<ATTN_D>::kv_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
+    using v_tile = st_bf<fwd_attend_ker_tile_dims<ATTN_D>::kv_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
     using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>>;
-    using o_tile    =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
-    using bias_tile =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::kv_height>;
+    using o_tile = st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
+    using bias_tile = st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::kv_height>;
 
-    using q_global = gl<bf16,  -1, -1, -1, -1, q_tile>;
-    using k_global = gl<bf16,  -1, -1, -1, -1, k_tile>;
-    using v_global = gl<bf16,  -1, -1, -1, -1, v_tile>;
+    using q_global = gl<bf16, -1, -1, -1, -1, q_tile>;
+    using k_global = gl<bf16, -1, -1, -1, -1, k_tile>;
+    using v_global = gl<bf16, -1, -1, -1, -1, v_tile>;
     using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-    using o_global = gl<bf16,  -1, -1, -1, -1, o_tile>;
+    using o_global = gl<bf16, -1, -1, -1, -1, o_tile>;
     using bias_global = gl<bf16, -1, -1, -1, -1, bias_tile>;
-    using globals      = fwd_globals<ATTN_D>;
+    using globals = fwd_globals<ATTN_D>;
 
     q_global qg_arg{d_q, ATTN_B, QO_HEADS, ATTN_N, ATTN_D};
     k_global kg_arg{d_k, ATTN_B, KV_HEADS, ATTN_N, ATTN_D};
     v_global vg_arg{d_v, ATTN_B, KV_HEADS, ATTN_N, ATTN_D};
-    l_global lg_arg{d_l, ATTN_B, QO_HEADS, 1,      ATTN_N};
+    l_global lg_arg{d_l, ATTN_B, QO_HEADS, 1, ATTN_N};
     o_global og_arg{d_o, ATTN_B, QO_HEADS, ATTN_N, ATTN_D};
     bias_global bg_arg{d_bias, 1, 1, ATTN_N, ATTN_N};
 
     globals g{qg_arg, kg_arg, vg_arg, lg_arg, og_arg, bg_arg, ATTN_N, QK_HEAD_RATIO};
 
     std::cout << "Allocated and set memory on GPU!" << std::endl;
-    
+
     unsigned long mem_size = kittens::MAX_SHARED_MEMORY; // need to launch two blocks if possible.
-    
+
     cudaFuncSetAttribute(
         fwd_attend_ker<ATTN_D, causal>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
-        mem_size
-    );
+        mem_size);
     std::cout << "Set max dynamic memory!" << std::endl;
 
-    dim3 grid(ATTN_N/(CONSUMER_WARPGROUPS*kittens::TILE_DIM*4), QO_HEADS, ATTN_B);
-    static_assert(ATTN_N % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0);
+    dim3 grid(ATTN_N / (CONSUMER_WARPGROUPS * kittens::TILE_DIM * 4), QO_HEADS, ATTN_B);
+    static_assert(ATTN_N % (CONSUMER_WARPGROUPS * kittens::TILE_DIM * 4) == 0);
     cudaDeviceSynchronize();
     std::cout << "Starting warmup" << std::endl;
-    for(int i = 0; i < ITER; i++) {    
+    for (int i = 0; i < ITER; i++)
+    {
         fwd_attend_ker<ATTN_D, causal><<<grid, BLOCK_SIZE, mem_size>>>(g);
     }
     cudaDeviceSynchronize();
     std::cout << "Starting kernel" << std::endl;
     const auto start = std::chrono::high_resolution_clock::now();
-    for(int i = 0; i < ITER; i++) {
+    for (int i = 0; i < ITER; i++)
+    {
         fwd_attend_ker<ATTN_D, causal><<<grid, BLOCK_SIZE, mem_size>>>(g);
     }
     cudaDeviceSynchronize();
@@ -235,15 +266,17 @@ int main(int argc, char **argv) {
     std::cout << "Finished kernel\n";
 
     float max_error = 0.0f;
-    
+
     // check correctness
     cudaMemcpy(o_bf, d_o, TOTAL_ELEMENTS_QO * sizeof(bf16), cudaMemcpyDeviceToHost);
-    for(int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
+    for (int i = 0; i < TOTAL_ELEMENTS_QO; i++)
+    {
         o[i] = __bfloat162float(o_bf[i]);
     }
-    cudaMemcpy(l_fl, d_l, TOTAL_ELEMENTS_QO/ATTN_D * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_D; i++) {
-        l[i] = l_fl[i]; 
+    cudaMemcpy(l_fl, d_l, TOTAL_ELEMENTS_QO / ATTN_D * sizeof(float), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_D; i++)
+    {
+        l[i] = l_fl[i];
     }
 
     bool good = true;
@@ -252,19 +285,23 @@ int main(int argc, char **argv) {
     std::ofstream diff_file("printouts/o_diff.txt");
 
     float total_diff = 0;
-    for(int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
-        float diff = o[i] - o_ref[i % (TOTAL_ELEMENTS_QO/ATTN_B)];
-        if (i < TOTAL_UNIQUE_ELEMENTS) {
+    for (int i = 0; i < TOTAL_ELEMENTS_QO; i++)
+    {
+        float diff = o[i] - o_ref[i % (TOTAL_ELEMENTS_QO / ATTN_B)];
+        if (i < TOTAL_UNIQUE_ELEMENTS)
+        {
             o_ref_file << o_ref[i] << ' ';
             o_file << o[i] << ' ';
             diff_file << diff << ' ';
         }
-        if(abs(diff) > 0.01 || isnan(diff)) {
+        if (abs(diff) > 0.01 || isnan(diff))
+        {
             good = false;
         }
         total_diff += abs(diff);
 
-        if (abs(diff) > max_error) {
+        if (abs(diff) > max_error)
+        {
             max_error = abs(diff);
         }
     }
@@ -272,19 +309,23 @@ int main(int argc, char **argv) {
     // print average difference
     std::cout << "Average o difference: " << total_diff / TOTAL_ELEMENTS_QO << std::endl;
     std::cout << "Max     o difference: " << max_error << std::endl;
-    if (abs(total_diff / TOTAL_ELEMENTS_QO) < 1e-3) {
+    if (abs(total_diff / TOTAL_ELEMENTS_QO) < 1e-3)
+    {
         good = true;
     }
 
     std::cout << "Average fwd execution time: " << std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count() / ITER << " us" << std::endl;
-    if(good) std::cout << "FWD Correct :)\n";
-    else std::cout << "FWD Incorrect :(\n";
+    if (good)
+        std::cout << "FWD Correct :)\n";
+    else
+        std::cout << "FWD Incorrect :(\n";
 
     // calculate efficiency
     long long f = flops(ATTN_B, ATTN_N, ATTN_D, QO_HEADS, causal, "fwd");
     double e = efficiency(f, std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count() / ITER);
-    std::cout << "Efficiency: " << e << " TFLOPS\n\n\n" << std::endl;
-    
+    std::cout << "Efficiency: " << e << " TFLOPS\n\n\n"
+              << std::endl;
+
     cudaFree(d_q);
     cudaFree(d_k);
     cudaFree(d_v);

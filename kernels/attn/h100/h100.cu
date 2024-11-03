@@ -63,18 +63,32 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     using v_tile    =         st_bf<K::kv_height, K::tile_width>;
     using l_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>>;
     using o_tile    =         st_bf<K::qo_height, K::tile_width>;
+    using bias_tile =         st_bf<K::qo_height, K::kv_height>;
     
     q_tile    (&q_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_tile, CONSUMER_WARPGROUPS>();
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
+    bias_tile (&bias_smem0)[K::stages] = al.allocate<bias_tile, K::stages>();
+    bias_tile (&bias_smem1)[K::stages] = al.allocate<bias_tile, K::stages>();
+    bias_tile (&bias_smem2)[K::stages] = al.allocate<bias_tile, K::stages>();
+    
+    // Create an array of pointers to the existing arrays
+    bias_tile* bias_smem[3] = { bias_smem0, bias_smem1, bias_smem2 };
+    
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
     
     int kv_blocks   = g.N / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
 
-    __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
+    __shared__ kittens::semaphore 
+        bias_smem_arrived[CONSUMER_WARPGROUPS][K::stages],
+        qsmem_semaphore, 
+        k_smem_arrived[K::stages], 
+        v_smem_arrived[K::stages], 
+        compute_done[K::stages];
+    
     if (threadIdx.x == 0) { 
         init_semaphore(qsmem_semaphore, 0, 1); 
         for(int j = 0; j < K::stages; j++) {
@@ -88,6 +102,14 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
             int4 q_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + wg, 0};
             tma::load_async(q_smem[wg], g.q, q_tile_idx, qsmem_semaphore);
+        }
+
+        for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
+            // for (int j = 0; j < K::stages - 1; j++) {
+            for (int j = 0; j < 1; j++) {
+                int4 bias_tile_idx = {0, 0, seq_idx + wg, j};
+                tma::load_async(bias_smem[wg][j], g.b, bias_tile_idx, bias_smem_arrived[wg][j]);
+            }
         }
 
         for (int j = 0; j < K::stages - 1; j++) {
@@ -174,7 +196,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                     }
                 }
             }
-
             row_max(max_vec, att_block, max_vec);
             
             if constexpr (D == 64) { 
