@@ -1,20 +1,26 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <random>
+
+/*
+Full Launch Command
+python gentests.py 3072 64 24 24 && make clean && make && ./attn randn_3072N_64D_24QO_24KV.txt
+*/
 
 constexpr int ATTN_B = 16;
-constexpr int QO_HEADS = 16;
-constexpr int KV_HEADS = 16;
+constexpr int QO_HEADS = 24;
+constexpr int KV_HEADS = 24;
 
 constexpr int QK_HEAD_RATIO = (QO_HEADS) / (KV_HEADS);
 static_assert(QO_HEADS >= KV_HEADS && QO_HEADS % KV_HEADS == 0);
 
-constexpr int ATTN_N = 768 * 16;
-constexpr int ATTN_D = 128;
+constexpr int ATTN_N = 3072;
+constexpr int ATTN_D = 64;
 constexpr int BLOCK_SIZE = (32 * NUM_WORKERS);
 constexpr int ITER = 10;
 
-constexpr bool causal = true;
+constexpr bool causal = false;
 
 #define CudaCheckError() __cudaCheckError(__FILE__, __LINE__)
 inline void __cudaCheckError(const char *file, const int line)
@@ -65,6 +71,16 @@ double efficiency(long long flop, double time)
     double tflops = flop / 1e12;
     double time_ms = time / 1e6;
     return tflops / time_ms;
+}
+
+static std::mt19937 gen(std::random_device{}());
+static std::uniform_int_distribution<> dis(0, 10000);
+
+template<typename T>
+void random_print(const char *name, T value) {
+    if (dis(gen) == 0) {
+        std::cout << name << ": " << value << std::endl;
+    }
 }
 
 int main(int argc, char **argv)
@@ -122,40 +138,61 @@ int main(int argc, char **argv)
     size_t n_valid_biases = 0;
     for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++) {
         infile >> bias[i];
+        random_print("bias", bias[i]);
         if (bias[i] != 0) {
             n_valid_biases++;
         }
     }
     std::cout << "Finished loading BIAS with " << n_valid_biases << " valid biases" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++){
         infile >> q[i];
+        random_print("q", q[i]);
+    }
     std::cout << "Finished loading Q" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++){
         infile >> k[i];
+        random_print("k", k[i]);
+    }
     std::cout << "Finished loading K" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++){
         infile >> v[i];
+        random_print("v", v[i]);
+    }
     std::cout << "Finished loading V" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++){
         infile >> o_ref[i];
+        random_print("o_ref", o_ref[i]);
+    }
     std::cout << "Finished loading O_REF" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++){
         infile >> l_ref[i];
+        random_print("l_ref", l_ref[i]);
+    }
     std::cout << "Finished loading L_REF" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / (ATTN_D * ATTN_B); i++){
         infile >> d_ref[i];
+        random_print("d_ref", d_ref[i]);
+    }
     std::cout << "Finished loading D_REF" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++){
         infile >> og[i];
+        random_print("og", og[i]);
+    }
     std::cout << "Finished loading OG" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++){
         infile >> qg_ref[i];
+        random_print("qg_ref", qg_ref[i]);
+    }
     std::cout << "Finished loading QG_REF" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++){
         infile >> kg_ref[i];
+        random_print("kg_ref", kg_ref[i]);
+    }
     std::cout << "Finished loading KG_REF" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
+    for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++){
         infile >> vg_ref[i];
+        random_print("vg_ref", vg_ref[i]);
+    }
     std::cout << "Finished loading VG_REF" << std::endl;
 
     std::cout << "Finished loading file from " << argv[1] << "!" << std::endl;

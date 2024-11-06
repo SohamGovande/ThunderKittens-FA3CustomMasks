@@ -37,11 +37,14 @@ def make_randomly_striped_mask(N):
     mask[:, :, sections] = 1
     return mask
 
+def make_ones_mask(N):
+    return torch.ones((1, 1, N, N), device='cuda', dtype=torch.bool)
+
 torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-mask = make_randomly_striped_mask(N)
+mask = make_striped_mask(N)
 mask.requires_grad_(False)
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
 
@@ -49,6 +52,10 @@ bias = torch.where(mask, 0.0, -1e6).to(torch.bfloat16).requires_grad_(False).con
 
 # pad seqlen to multiple of 128
 o = scaled_dot_product_attention(q, k, v, mask, is_causal=causal, dropout_p=0.0)
+print('Expected output:', o[0][0][0][:15])
+if not mask.all():
+    o_without_mask = scaled_dot_product_attention(q, k, v, is_causal=causal, dropout_p=0.0)
+    print(f'Difference between masked and unmasked output: {(o - o_without_mask)[0][0][0][:15]}')
 # o, _ = scaled_dot_product_gqa(
 #     q.permute(0, 2, 1, 3).contiguous(),
 #     k.permute(0, 2, 1, 3).contiguous(),
