@@ -4,7 +4,7 @@ import numpy as np
 import sys
 import math
 from torch.nn.functional import scaled_dot_product_attention
-# pip install git+https://github.com/fkodom/grouped-query-attention-pytorch.git
+# pip install tqdm tabulate git+https://github.com/fkodom/grouped-query-attention-pytorch.git
 from grouped_query_attention_pytorch.attention import scaled_dot_product_gqa
 
 # only generate a single batch/head of data, which makes file loading much faster.
@@ -18,15 +18,34 @@ H_KV = int(sys.argv[4])
 
 causal = False
 
+def make_causal_mask(N):
+    return torch.tril(torch.ones((1, 1, N, N), device='cuda', dtype=torch.bool))
+
+def make_randn_mask(N):
+    return torch.randint(0, 2, (1, 1, N, N), dtype=torch.bool, device='cuda')
+
+def make_striped_mask(N):
+    mask = torch.zeros((1, 1, N, N), device='cuda', dtype=torch.bool)
+    mask[:, :, ::2, 1::2] = 1
+    mask[:, :, 1::2, ::2] = 1
+    return mask
+
+def make_randomly_striped_mask(N):
+    mask = torch.zeros((1, 1, N, N), device='cuda', dtype=torch.bool)
+    sections = torch.randperm(N * N).reshape(N, N)
+    sections = sections < (N * N // 4)
+    mask[:, :, sections] = 1
+    return mask
+
 torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-mask = (torch.randint(0, 2, (1, 1, N, N), dtype=torch.bool, device='cuda'))
+mask = make_striped_mask(N)
 mask.requires_grad_(False)
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
 
-bias = torch.where(mask, 0.0, -torch.inf).requires_grad_(False).contiguous()
+bias = torch.where(mask, 0.0, -torch.inf).to(torch.bfloat16).requires_grad_(False).contiguous()
 
 # pad seqlen to multiple of 128
 o = scaled_dot_product_attention(q, k, v, mask, is_causal=causal, dropout_p=0.0)
@@ -140,6 +159,8 @@ with open(filename, 'w') as f:
     
     og_f = grad_output.to(torch.float32).flatten().detach().cpu().numpy()
     
+    biasf = bias.to(torch.float32).flatten().detach().cpu().numpy()
+    
     # intermediate
     l_vecf = l_vec.to(torch.float32).flatten().detach().cpu().numpy()
     d_vecf = d_vec.to(torch.float32).flatten().detach().cpu().numpy()
@@ -147,7 +168,7 @@ with open(filename, 'w') as f:
     qg_f = q_grad.to(torch.float32).flatten().detach().cpu().numpy()
     kg_f = k_grad.to(torch.float32).flatten().detach().cpu().numpy()
     vg_f = v_grad.to(torch.float32).flatten().detach().cpu().numpy()
-    
+        
     for i in trange(q.shape[0] * q.shape[1] * q.shape[2] * q.shape[3]):
         f.write(repr(float(qf[i])))
         f.write(' ')
@@ -158,7 +179,7 @@ with open(filename, 'w') as f:
         f.write(repr(float(vf[i])))
         f.write(' ')
     for i in trange(bias.shape[0] * bias.shape[1] * bias.shape[2] * bias.shape[3]):
-        f.write(repr(float(bias[i])))
+        f.write(repr(float(biasf[i])))
         f.write(' ')
     for i in trange(o.shape[0] * o.shape[1] * o.shape[2] * o.shape[3]):
         f.write(repr(float(of[i])))
