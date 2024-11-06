@@ -151,9 +151,11 @@ if H_QO != H_KV:
 filename += '.txt'
 
 with open(filename, 'w') as f:
-    tensors = [q, k, v, bias, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
-    with open(filename, 'w') as f:
-        for i, tensor in enumerate(tensors):
-            print(f'Writing tensor {i} of {len(tensors)}')
-            array = tensor.to(torch.float32).flatten().detach().cpu().numpy()
-            f.write(' '.join(map(str, array)) + ' ')
+    tensors = [bias, q, k, v, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
+    bias_idx = 0
+    for i, tensor in enumerate(tensors):
+        print(f'Writing tensor {i} of {len(tensors)}')
+        array = tensor.to(torch.float32).flatten().detach().cpu().numpy()
+        if i == bias_idx:
+            print('# of nonzero bias values:', (array != 0).sum(), 'out of', array.size)
+        f.write(' '.join(map(str, array)) + ' \r\n')

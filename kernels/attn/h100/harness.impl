@@ -119,7 +119,14 @@ int main(int argc, char **argv)
     std::ifstream infile(argv[1]);
 
     std::cout << "Starting to enter!" << std::endl;
-
+    size_t n_valid_biases = 0;
+    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++) {
+        infile >> bias[i];
+        if (bias[i] != 0) {
+            n_valid_biases++;
+        }
+    }
+    std::cout << "Finished loading BIAS with " << n_valid_biases << " valid biases" << std::endl;
     for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
         infile >> q[i];
     std::cout << "Finished loading Q" << std::endl;
@@ -129,9 +136,6 @@ int main(int argc, char **argv)
     for (int i = 0; i < TOTAL_ELEMENTS_KV / ATTN_B; i++)
         infile >> v[i];
     std::cout << "Finished loading V" << std::endl;
-    for (int i = 0; i < TOTAL_ELEMENTS_BIAS; i++)
-        infile >> bias[i];
-    std::cout << "Finished loading BIAS" << std::endl;
     for (int i = 0; i < TOTAL_ELEMENTS_QO / ATTN_B; i++)
         infile >> o_ref[i];
     std::cout << "Finished loading O_REF" << std::endl;
