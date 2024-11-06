@@ -172,7 +172,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
             wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             auto bias_subtile = subtile_inplace<16, K::kv_height>(bias_smem[(kv_idx)%K::stages], {warp_id_within_warpgroup, 0});
-            // add(att_block, att_block, bias_subtile);
+            kittens::load(bias_reg, bias_subtile);
+            add(att_block, att_block, bias_reg);
 
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
