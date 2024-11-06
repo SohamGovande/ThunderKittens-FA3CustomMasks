@@ -148,9 +148,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         rt_fl<16, K::kv_height>  att_block;
         rt_bf<16, K::kv_height>  att_block_mma;
         rt_fl<16, K::tile_width> o_reg;
-        rt_fl<16, K::kv_height> bias_reg;
+        rt_fl<16, 16> bias_reg;
 
-        auto warp_id_within_warpgroup = kittens::warpid() % kittens::WARPGROUP_WARPS;
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
         
         neg_infty(max_vec);
@@ -170,10 +169,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
-            wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-            auto bias_subtile = subtile_inplace<16, K::kv_height>(bias_smem[(kv_idx)%K::stages], {warp_id_within_warpgroup, 0});
-            kittens::load(bias_reg, bias_subtile);
-            add(att_block, att_block, bias_reg);
 
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
@@ -181,6 +176,15 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             
             warpgroup::mma_async_wait();
 
+            wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
+            
+            #pragma unroll
+            for (auto j = 0; j < (K::kv_height/kittens::TILE_DIM); j++) {
+                auto &attn_subtile = reinterpret_cast<rt_fl<kittens::TILE_DIM, kittens::TILE_DIM>&>(att_block.tiles[0][j]);
+                load(bias_reg, subtile_inplace<kittens::TILE_DIM, kittens::TILE_DIM>(bias_smem[(kv_idx)%K::stages], {warpid % kittens::WARPGROUP_WARPS, j}));    
+                add(attn_subtile, attn_subtile, bias_reg);
+            }
+            
             if constexpr (is_causal) {
                 const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_DIM)) + warpid; 
                       int k_blk = (kv_idx * (K::kv_height/kittens::TILE_DIM)); 

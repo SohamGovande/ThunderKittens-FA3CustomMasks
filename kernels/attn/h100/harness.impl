@@ -78,7 +78,8 @@ static std::uniform_int_distribution<> dis(0, 10000);
 
 template<typename T>
 void random_print(const char *name, T value) {
-    if (dis(gen) == 0) {
+    // Never happens
+    if (dis(gen) == -1) {
         std::cout << name << ": " << value << std::endl;
     }
 }
@@ -324,7 +325,7 @@ int main(int argc, char **argv)
     std::ofstream o_ref_file("printouts/o_ref.txt");
     std::ofstream o_file("printouts/o.txt");
     std::ofstream diff_file("printouts/o_diff.txt");
-
+    
     float total_diff = 0;
     for (int i = 0; i < TOTAL_ELEMENTS_QO; i++)
     {
