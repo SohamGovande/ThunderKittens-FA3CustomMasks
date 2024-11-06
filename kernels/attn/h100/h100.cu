@@ -69,7 +69,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
-    bias_tile (&bias_smem)[K::stages] = al.allocate<bias_tile, K::stages>();
+    bias_tile (&bias_smem)[K::stages]        = al.allocate<bias_tile, K::stages>();
     
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
     
@@ -148,7 +148,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         rt_fl<16, K::kv_height>  att_block;
         rt_bf<16, K::kv_height>  att_block_mma;
         rt_fl<16, K::tile_width> o_reg;
-        
+        rt_fl<16, K::kv_height> bias_reg;
+
+        auto warp_id_within_warpgroup = kittens::warpid() % kittens::WARPGROUP_WARPS;
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
         
         neg_infty(max_vec);
@@ -168,7 +170,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
-            
+            wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
+            auto bias_subtile = subtile_inplace<16, K::kv_height>(bias_smem[(kv_idx)%K::stages], {warp_id_within_warpgroup, 0});
+            // add(att_block, att_block, bias_subtile);
+
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
             else                   { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
