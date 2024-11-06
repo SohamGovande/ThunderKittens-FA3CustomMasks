@@ -49,6 +49,11 @@ template<int D> struct fwd_globals {
     const int hr;
 };
 
+template<int num_stages>
+__device__ inline int4 make_bias_tile_idx(int seq_idx, int kv_idx) {
+    return {0, 0, seq_idx, (kv_idx)%num_stages};
+}
+
 template<int D, bool is_causal>
 __global__  __launch_bounds__((NUM_WORKERS)*kittens::WARP_THREADS, 1)
 void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
@@ -107,9 +112,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
             tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
 
-            int4 bias_tile_idx = {0, 0, seq_idx, j};
             tma::expect_bytes(bias_smem_arrived[j], sizeof(bias_tile));
-            tma::load_async(bias_smem[j], g.b, bias_tile_idx, bias_smem_arrived[j]);
+            tma::load_async(bias_smem[j], g.b, make_bias_tile_idx<K::stages>(seq_idx, j), bias_smem_arrived[j]);
         }
     }
     __syncthreads(); 
@@ -134,9 +138,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
                 
-                int4 bias_tile_idx = {0, 0, seq_idx, (kv_idx+1)%K::stages};
                 tma::expect_bytes(bias_smem_arrived[(kv_idx+1)%K::stages], sizeof(bias_tile));
-                tma::load_async(bias_smem[(kv_idx+1)%K::stages], g.b, bias_tile_idx, bias_smem_arrived[(kv_idx+1)%K::stages]);
+                tma::load_async(bias_smem[(kv_idx+1)%K::stages], g.b, make_bias_tile_idx<K::stages>(seq_idx, kv_idx+1), bias_smem_arrived[(kv_idx+1)%K::stages]);
     
                 wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             }
