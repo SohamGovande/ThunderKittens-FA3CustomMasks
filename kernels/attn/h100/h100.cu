@@ -69,12 +69,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
-    bias_tile (&bias_smem0)[K::stages] = al.allocate<bias_tile, K::stages>();
-    bias_tile (&bias_smem1)[K::stages] = al.allocate<bias_tile, K::stages>();
-    bias_tile (&bias_smem2)[K::stages] = al.allocate<bias_tile, K::stages>();
-    
-    // Create an array of pointers to the existing arrays
-    bias_tile* bias_smem[3] = { bias_smem0, bias_smem1, bias_smem2 };
+    bias_tile (&bias_smem)[K::stages] = al.allocate<bias_tile, K::stages>();
     
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
     
@@ -83,7 +78,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
 
     __shared__ kittens::semaphore 
-        bias_smem_arrived[CONSUMER_WARPGROUPS][K::stages],
+        bias_smem_arrived[K::stages],
         qsmem_semaphore, 
         k_smem_arrived[K::stages], 
         v_smem_arrived[K::stages], 
@@ -94,6 +89,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         for(int j = 0; j < K::stages; j++) {
             init_semaphore(k_smem_arrived[j], 0, 1); 
             init_semaphore(v_smem_arrived[j], 0, 1); 
+            init_semaphore(bias_smem_arrived[j], 0, 1); 
             init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0); 
         }
 
@@ -104,20 +100,16 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             tma::load_async(q_smem[wg], g.q, q_tile_idx, qsmem_semaphore);
         }
 
-        for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
-            // for (int j = 0; j < K::stages - 1; j++) {
-            for (int j = 0; j < 1; j++) {
-                int4 bias_tile_idx = {0, 0, seq_idx + wg, j};
-                tma::load_async(bias_smem[wg][j], g.b, bias_tile_idx, bias_smem_arrived[wg][j]);
-            }
-        }
-
         for (int j = 0; j < K::stages - 1; j++) {
             int4 kv_tile_idx = {blockIdx.z, kv_head_idx, j, 0};
             tma::expect_bytes(k_smem_arrived[j], sizeof(k_tile));
             tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
             tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
             tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
+
+            int4 bias_tile_idx = {0, 0, seq_idx, j};
+            tma::expect_bytes(bias_smem_arrived[j], sizeof(bias_tile));
+            tma::load_async(bias_smem[j], g.b, bias_tile_idx, bias_smem_arrived[j]);
         }
     }
     __syncthreads(); 
