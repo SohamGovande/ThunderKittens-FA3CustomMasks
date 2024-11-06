@@ -134,6 +134,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
                 
+                int4 bias_tile_idx = {0, 0, seq_idx, (kv_idx+1)%K::stages};
+                tma::expect_bytes(bias_smem_arrived[(kv_idx+1)%K::stages], sizeof(bias_tile));
+                tma::load_async(bias_smem[(kv_idx+1)%K::stages], g.b, bias_tile_idx, bias_smem_arrived[(kv_idx+1)%K::stages]);
+    
                 wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             }
         }
