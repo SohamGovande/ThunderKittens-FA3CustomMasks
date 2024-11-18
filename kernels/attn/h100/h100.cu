@@ -16,13 +16,13 @@ template<int D> struct fwd_attend_ker_tile_dims {};
 template<> struct fwd_attend_ker_tile_dims<64> {
     constexpr static int tile_width = (64);
     constexpr static int qo_height  = (4*16);
-    constexpr static int kv_height  = (8*16);
+    constexpr static int kv_height  = (2*16);
     constexpr static int stages     = (4); 
 };
 template<> struct fwd_attend_ker_tile_dims<128> {
     constexpr static int tile_width = (128);
     constexpr static int qo_height  = (4*16);
-    constexpr static int kv_height  = (8*16);
+    constexpr static int kv_height  = (2*16);
     constexpr static int stages     = (2); 
 };
 
