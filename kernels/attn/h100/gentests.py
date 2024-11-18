@@ -165,4 +165,4 @@ with open(filename, 'w') as f:
         array = tensor.to(torch.float32).flatten().detach().cpu().numpy()
         if i == bias_idx:
             print('# of nonzero bias values:', (array != 0).sum(), 'out of', array.size)
-        f.write(' '.join(map(str, array)) + ' \r\n')
+        f.write(' '.join(map(str, array)) + ' \n')

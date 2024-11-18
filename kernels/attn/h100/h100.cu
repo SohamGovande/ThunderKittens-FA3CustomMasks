@@ -54,6 +54,18 @@ __device__ inline int4 make_bias_tile_idx(int seq_idx, int kv_idx) {
     return {0, 0, seq_idx, (kv_idx)%num_stages};
 }
 
+template<int W, int H, typename T>
+__device__ inline void print_tile(const char* msg, const T &tile) {
+    printf("%s\n", msg);
+    for (auto x = 0; x < W; x += 1) {
+        printf("[ ");
+        for (auto y = 0; y < H; y += 1) {
+            printf("%.2f ", tile[{x, y}]);
+        }
+        printf("]\n");
+    }
+}
+
 template<int D, bool is_causal>
 __global__  __launch_bounds__((NUM_WORKERS)*kittens::WARP_THREADS, 1)
 void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
@@ -81,7 +93,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int kv_blocks   = g.N / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
-
     __shared__ kittens::semaphore 
         bias_smem_arrived[K::stages],
         qsmem_semaphore, 
@@ -154,7 +165,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         rt_fl<16, 16> bias_reg;
 
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
-        
         neg_infty(max_vec);
         zero(norm_vec);
         zero(o_reg);
@@ -180,13 +190,37 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warpgroup::mma_async_wait();
 
             wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-            
+
             #pragma unroll
             for (auto j = 0; j < (K::kv_height/kittens::TILE_DIM); j++) {
                 auto &attn_subtile = reinterpret_cast<rt_fl<kittens::TILE_DIM, kittens::TILE_DIM>&>(att_block.tiles[0][j]);
-                load(bias_reg, subtile_inplace<kittens::TILE_DIM, kittens::TILE_DIM>(bias_smem[(kv_idx)%K::stages], {warpid % kittens::WARPGROUP_WARPS, j}));    
+                // both warpid, j and j, warpid seem to work on the checkerboard attn mask
+                int warpidx = warpid % kittens::WARPGROUP_WARPS;
+                auto subtile = subtile_inplace<kittens::TILE_DIM, kittens::TILE_DIM>(bias_smem[(kv_idx)%K::stages], {warpidx, j});
+                // if (seq_idx == 0 && kv_idx == 0) {
+                //     print_tile<16, 16>("bias_reg", subtile);
+                // }
+                load(bias_reg, subtile);    
                 add(attn_subtile, attn_subtile, bias_reg);
+                if (seq_idx == 0 && kv_idx == 0) {
+                    bool is_zero[] {
+                        bias_reg.tiles[0][0].data[0] > -0.001f,
+                        bias_reg.tiles[0][0].data[1] > -0.001f,
+                        bias_reg.tiles[0][0].data[2] > -0.001f,
+                        bias_reg.tiles[0][0].data[3] > -0.001f,
+                        bias_reg.tiles[0][0].data[4] > -0.001f,
+                        bias_reg.tiles[0][0].data[5] > -0.001f,
+                        bias_reg.tiles[0][0].data[6] > -0.001f,
+                        bias_reg.tiles[0][0].data[7] > -0.001f,
+                    };
+                    printf("Bias Subtile %d %d %d %d %d %d %d %d %d %d %d %d\n", seq_idx, kv_idx, j, warpidx, kittens::laneid(), is_zero[0], is_zero[1], is_zero[2], is_zero[3], is_zero[4], is_zero[5], is_zero[6], is_zero[7]);
+                }
             }
+
+            // if (seq_idx == 0 && kv_idx == 2 && blockIdx.y == 0 && blockIdx.z == 0 && threadIdx.x == 0) {
+                // print_tile<K::kv_height, 64>("k_smem", k_smem[(kv_idx)%K::stages]);
+                // printf("KSMEM %.2f ", k_smem[(kv_idx)%K::stages][{0,0}].data[1]);
+            // }
             
             if constexpr (is_causal) {
                 const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_DIM)) + warpid; 
