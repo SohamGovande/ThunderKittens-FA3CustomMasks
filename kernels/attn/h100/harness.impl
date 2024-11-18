@@ -185,12 +185,19 @@ int main(int argc, char **argv) {
     using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>>;
     using o_tile    =         st_bf<fwd_attend_ker_tile_dims<ATTN_D>::qo_height, fwd_attend_ker_tile_dims<ATTN_D>::tile_width>;
 
+    bool *d_blocksparsity;
+    constexpr int BS_WIDTH = (ATTN_N / q_tile::width);
+    constexpr int BS_HEIGHT = (ATTN_N / k_tile::width);
+    constexpr int TOTAL_BLOCKSPARSITY_SIZE = BS_WIDTH * BS_HEIGHT * sizeof(bool);
+    cudaMalloc(&d_blocksparsity, TOTAL_BLOCKSPARSITY_SIZE);
+    cudaMemset(d_blocksparsity, true, TOTAL_BLOCKSPARSITY_SIZE);
+
     using q_global = gl<bf16,  -1, -1, -1, -1, q_tile>;
     using k_global = gl<bf16,  -1, -1, -1, -1, k_tile>;
     using v_global = gl<bf16,  -1, -1, -1, -1, v_tile>;
     using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
     using o_global = gl<bf16,  -1, -1, -1, -1, o_tile>;
-
+    using bs_global = gl<bool,  -1, -1, -1, -1, bool>;
     using globals      = fwd_globals<ATTN_D>;
 
     q_global qg_arg{d_q, ATTN_B, QO_HEADS, ATTN_N, ATTN_D};
@@ -198,8 +205,7 @@ int main(int argc, char **argv) {
     v_global vg_arg{d_v, ATTN_B, KV_HEADS, ATTN_N, ATTN_D};
     l_global lg_arg{d_l, ATTN_B, QO_HEADS, 1,      ATTN_N};
     o_global og_arg{d_o, ATTN_B, QO_HEADS, ATTN_N, ATTN_D};
-
-    globals g{qg_arg, kg_arg, vg_arg, lg_arg, og_arg, ATTN_N, QK_HEAD_RATIO};
+    globals g{qg_arg, kg_arg, vg_arg, lg_arg, og_arg, d_blocksparsity, ATTN_N, QK_HEAD_RATIO};
 
     std::cout << "Allocated and set memory on GPU!" << std::endl;
     
