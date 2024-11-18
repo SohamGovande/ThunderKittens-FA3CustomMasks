@@ -32,39 +32,22 @@ template<int D> struct fwd_globals {
     using v_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
-    using bias_tile =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>;
+
     using q_gl = gl<bf16,  -1, -1, -1, -1, q_tile>;
     using k_gl = gl<bf16,  -1, -1, -1, -1, k_tile>;
     using v_gl = gl<bf16,  -1, -1, -1, -1, v_tile>;
     using l_gl = gl<float, -1, -1, -1, -1, l_col_vec>;
     using o_gl = gl<bf16,  -1, -1, -1, -1, o_tile>;
-    using bias_gl = gl<bf16, -1, -1, -1, -1, bias_tile>;
+
     q_gl q;
     k_gl k;
     v_gl v;
     l_gl l;
     o_gl o;
-    bias_gl b;
+
     const int N; 
     const int hr;
 };
-
-template<int num_stages>
-__device__ inline int4 make_bias_tile_idx(int seq_idx, int kv_idx) {
-    return {0, 0, seq_idx, (kv_idx)%num_stages};
-}
-
-template<int W, int H, typename T>
-__device__ inline void print_tile(const char* msg, const T &tile) {
-    printf("%s\n", msg);
-    for (auto x = 0; x < W; x += 1) {
-        printf("[ ");
-        for (auto y = 0; y < H; y += 1) {
-            printf("%.2f ", tile[{x, y}]);
-        }
-        printf("]\n");
-    }
-}
 
 template<int D, bool is_causal>
 __global__  __launch_bounds__((NUM_WORKERS)*kittens::WARP_THREADS, 1)
@@ -80,32 +63,23 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     using v_tile    =         st_bf<K::kv_height, K::tile_width>;
     using l_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>>;
     using o_tile    =         st_bf<K::qo_height, K::tile_width>;
-    using bias_tile =         st_bf<K::qo_height, K::kv_height>;
     
     q_tile    (&q_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_tile, CONSUMER_WARPGROUPS>();
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
-    bias_tile (&bias_smem)[K::stages]        = al.allocate<bias_tile, K::stages>();
-    
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
     
     int kv_blocks   = g.N / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
-    __shared__ kittens::semaphore 
-        bias_smem_arrived[K::stages],
-        qsmem_semaphore, 
-        k_smem_arrived[K::stages], 
-        v_smem_arrived[K::stages], 
-        compute_done[K::stages];
-    
+
+    __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
     if (threadIdx.x == 0) { 
         init_semaphore(qsmem_semaphore, 0, 1); 
         for(int j = 0; j < K::stages; j++) {
             init_semaphore(k_smem_arrived[j], 0, 1); 
             init_semaphore(v_smem_arrived[j], 0, 1); 
-            init_semaphore(bias_smem_arrived[j], 0, 1); 
             init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0); 
         }
 
@@ -122,9 +96,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
             tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
             tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
-
-            tma::expect_bytes(bias_smem_arrived[j], sizeof(bias_tile));
-            tma::load_async(bias_smem[j], g.b, make_bias_tile_idx<K::stages>(seq_idx, j), bias_smem_arrived[j]);
         }
     }
     __syncthreads(); 
@@ -149,9 +120,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
                 
-                tma::expect_bytes(bias_smem_arrived[(kv_idx+1)%K::stages], sizeof(bias_tile));
-                tma::load_async(bias_smem[(kv_idx+1)%K::stages], g.b, make_bias_tile_idx<K::stages>(seq_idx, kv_idx+1), bias_smem_arrived[(kv_idx+1)%K::stages]);
-    
                 wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             }
         }
@@ -162,9 +130,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         rt_fl<16, K::kv_height>  att_block;
         rt_bf<16, K::kv_height>  att_block_mma;
         rt_fl<16, K::tile_width> o_reg;
-        rt_fl<16, 16> bias_reg;
-
+        
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
+        
         neg_infty(max_vec);
         zero(norm_vec);
         zero(o_reg);
@@ -182,46 +150,13 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
-
+            
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
             else                   { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
             
             warpgroup::mma_async_wait();
 
-            wait(bias_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-
-            #pragma unroll
-            for (auto j = 0; j < (K::kv_height/kittens::TILE_DIM); j++) {
-                auto &attn_subtile = reinterpret_cast<rt_fl<kittens::TILE_DIM, kittens::TILE_DIM>&>(att_block.tiles[0][j]);
-                // both warpid, j and j, warpid seem to work on the checkerboard attn mask
-                int warpidx = warpid % kittens::WARPGROUP_WARPS;
-                auto subtile = subtile_inplace<kittens::TILE_DIM, kittens::TILE_DIM>(bias_smem[(kv_idx)%K::stages], {warpidx, j});
-                // if (seq_idx == 0 && kv_idx == 0) {
-                //     print_tile<16, 16>("bias_reg", subtile);
-                // }
-                load(bias_reg, subtile);    
-                add(attn_subtile, attn_subtile, bias_reg);
-                if (seq_idx == 0 && kv_idx == 0) {
-                    bool is_zero[] {
-                        bias_reg.tiles[0][0].data[0] > -0.001f,
-                        bias_reg.tiles[0][0].data[1] > -0.001f,
-                        bias_reg.tiles[0][0].data[2] > -0.001f,
-                        bias_reg.tiles[0][0].data[3] > -0.001f,
-                        bias_reg.tiles[0][0].data[4] > -0.001f,
-                        bias_reg.tiles[0][0].data[5] > -0.001f,
-                        bias_reg.tiles[0][0].data[6] > -0.001f,
-                        bias_reg.tiles[0][0].data[7] > -0.001f,
-                    };
-                    printf("Bias Subtile %d %d %d %d %d %d %d %d %d %d %d %d\n", seq_idx, kv_idx, j, warpidx, kittens::laneid(), is_zero[0], is_zero[1], is_zero[2], is_zero[3], is_zero[4], is_zero[5], is_zero[6], is_zero[7]);
-                }
-            }
-
-            // if (seq_idx == 0 && kv_idx == 2 && blockIdx.y == 0 && blockIdx.z == 0 && threadIdx.x == 0) {
-                // print_tile<K::kv_height, 64>("k_smem", k_smem[(kv_idx)%K::stages]);
-                // printf("KSMEM %.2f ", k_smem[(kv_idx)%K::stages][{0,0}].data[1]);
-            // }
-            
             if constexpr (is_causal) {
                 const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_DIM)) + warpid; 
                       int k_blk = (kv_idx * (K::kv_height/kittens::TILE_DIM)); 
@@ -239,6 +174,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                     }
                 }
             }
+
             row_max(max_vec, att_block, max_vec);
             
             if constexpr (D == 64) { 
@@ -705,7 +641,7 @@ void bwd_attend_ker(const __grid_constant__ bwd_globals<D> g) {
 
 #ifdef TORCH_COMPILE
 
-#include "common/pyutils/torch_helpers.cuh"
+#include "pyutils/torch_helpers.cuh"
 #include <ATen/cuda/CUDAContext.h>
 #include <iostream>
 

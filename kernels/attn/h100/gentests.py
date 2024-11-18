@@ -44,7 +44,7 @@ torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-mask = make_striped_mask(N)
+mask = make_ones_mask(N)
 mask.requires_grad_(False)
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
 
@@ -158,8 +158,8 @@ if H_QO != H_KV:
 filename += '.txt'
 
 with open(filename, 'w') as f:
-    tensors = [bias, q, k, v, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
-    bias_idx = 0
+    tensors = [q, k, v, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
+    bias_idx = -1
     for i, tensor in enumerate(tensors):
         print(f'Writing tensor {i} of {len(tensors)}')
         array = tensor.to(torch.float32).flatten().detach().cpu().numpy()
