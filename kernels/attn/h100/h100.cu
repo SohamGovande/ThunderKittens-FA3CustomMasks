@@ -93,6 +93,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
 
+    int last_kv_idx_loaded = -1;
+
     __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
     if (threadIdx.x == 0) { 
         init_semaphore(qsmem_semaphore, 0, 1); 
@@ -110,13 +112,14 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         for (int j = 0; j < K::stages - 1; j++) {
-            // if (should_load_kv(j, seq_idx, kv_blocks, g)) {
+            if (should_load_kv(j, seq_idx, kv_blocks, g)) {
                 int4 kv_tile_idx = {blockIdx.z, kv_head_idx, j, 0};
                 tma::expect_bytes(k_smem_arrived[j], sizeof(k_tile));
                 tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
                 tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
                 tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
-            // }
+                last_kv_idx_loaded = j;
+            }
         }
     }
     __syncthreads(); 
@@ -135,15 +138,22 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         if(warpid == NUM_WORKERS-4) {
             for (auto kv_idx = pipe_idx - 1; kv_idx <= kv_iters; kv_idx++) {
-                // if (should_load_kv(kv_idx, seq_idx, kv_blocks, g)) {
+                bool should_load = should_load_kv(kv_idx + 1, seq_idx, kv_blocks, g);
+                if (should_load) {
                     int4 kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
                     tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
                     tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
                     tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                     tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
-                    
-                    wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-                // }
+                }
+
+                if (last_kv_idx_loaded != -1) {
+                    wait(compute_done[last_kv_idx_loaded%K::stages], (last_kv_idx_loaded/K::stages)%2);
+                }
+
+                if (should_load) {
+                    last_kv_idx_loaded = kv_idx + 1;
+                }
             }
         }
     }
