@@ -16,7 +16,7 @@ template<int D> struct fwd_attend_ker_tile_dims {};
 template<> struct fwd_attend_ker_tile_dims<64> {
     constexpr static int tile_width = (64);
     constexpr static int qo_height  = (4*16);
-    constexpr static int kv_height  = (2*16);
+    constexpr static int kv_height  = (8*16);
     constexpr static int stages     = (4); 
 };
 template<> struct fwd_attend_ker_tile_dims<128> {
@@ -32,7 +32,7 @@ template<int D> struct fwd_globals {
     using v_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
-
+    
     using q_gl = gl<bf16,  -1, -1, -1, -1, q_tile>;
     using k_gl = gl<bf16,  -1, -1, -1, -1, k_tile>;
     using v_gl = gl<bf16,  -1, -1, -1, -1, v_tile>;
@@ -44,29 +44,11 @@ template<int D> struct fwd_globals {
     v_gl v;
     l_gl l;
     o_gl o;
-    bool *d_blocksparsity;
+    int *bs_indices;
 
     const int N; 
     const int hr;
 };
-
-template<int D>
-__device__ 
-inline bool should_load_kv_from_wg(int wg, int kv_idx, int seq_idx, int kv_blocks, const fwd_globals<D>& g) {
-    auto q_idx = seq_idx + wg;
-    return g.d_blocksparsity[(q_idx * kv_blocks) + kv_idx];
-}
-
-template<int D>
-__device__ 
-bool should_load_kv(int kv_idx, int seq_idx, int kv_blocks, const fwd_globals<D>& g) {
-    for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
-        if (should_load_kv_from_wg(wg, kv_idx, seq_idx, kv_blocks, g)) {
-            return true;
-        }
-    }
-    return false;
-}
 
 template<int D, bool is_causal>
 __global__  __launch_bounds__((NUM_WORKERS)*kittens::WARP_THREADS, 1)
@@ -92,8 +74,16 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int kv_blocks   = g.N / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
+    int *indices_ptr = g.bs_indices;
 
     __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
+    // if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+    //     for (int index = 0; index < 128; index++) {
+    //         int j = indices_ptr[blockIdx.x * blockDim.x + index];
+    //         printf("indices_ptr[%2d], kv_blocks = %2d, j = %2d\n", blockIdx.x * kv_blocks + index, kv_blocks, j);
+    //     }
+    // }
+    __syncthreads();
     if (threadIdx.x == 0) { 
         init_semaphore(qsmem_semaphore, 0, 1); 
         for(int j = 0; j < K::stages; j++) {
@@ -109,14 +99,18 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             tma::load_async(q_smem[wg], g.q, q_tile_idx, qsmem_semaphore);
         }
 
-        for (int j = 0; j < K::stages - 1; j++) {
-            if (should_load_kv(j, seq_idx, kv_blocks, g)) {
-                int4 kv_tile_idx = {blockIdx.z, kv_head_idx, j, 0};
-                tma::expect_bytes(k_smem_arrived[j], sizeof(k_tile));
-                tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
-                tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
-                tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
-            }
+        for (int index = 0; index < K::stages - 1; index++) {
+            // int j = index;
+            int j = indices_ptr[blockIdx.x * (kv_blocks/2) + index];
+            if (j == -1) { break; }
+            // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
+            //     printf("indices_ptr[%2d] = %2d\n", blockIdx.x * (kv_blocks/2) + index, j);
+            // }
+            int4 kv_tile_idx = {blockIdx.z, kv_head_idx, j, 0};
+            tma::expect_bytes(k_smem_arrived[j], sizeof(k_tile));
+            tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
+            tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
+            tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
         }
     }
     __syncthreads(); 
@@ -134,16 +128,18 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         else { kv_iters = kv_blocks-2; }
 
         if(warpid == NUM_WORKERS-4) {
-            for (auto kv_idx = pipe_idx - 1; kv_idx <= kv_iters; kv_idx++) {
-                if (should_load_kv(kv_idx, seq_idx, kv_blocks, g)) {
-                    int4 kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
-                    tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
-                    tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
-                    tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
-                    tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
-                    
-                    wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-                }
+            for (auto index = pipe_idx - 1; index <= kv_iters; index++) {
+                int kv_idx = indices_ptr[blockIdx.x * (kv_blocks/2) + index];
+                if (kv_idx == -1) { break; }
+                // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
+                //     printf("indices_ptr[%2d] = %2d\n", blockIdx.x * (kv_blocks/2) + index, kv_idx);
+                // }    
+                int4 kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
+                tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
+                tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
+                tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
+                tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);                    
+                wait(compute_done[(kv_idx)%K::stages], ((kv_idx)/K::stages)%2);
             }
         }
     }
@@ -170,9 +166,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(qsmem_semaphore, 0);
 
         for (auto kv_idx = 0; kv_idx <= kv_iters; kv_idx++) {
-            if (!should_load_kv_from_wg(warpgroupid, kv_idx, seq_idx, kv_blocks, g)) { 
-                continue;
-            }
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
             
@@ -184,7 +177,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             if constexpr (is_causal) {
                 const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_DIM)) + warpid; 
-                      int k_blk = (kv_idx * (K::kv_height/kittens::TILE_DIM)); 
+                    int k_blk = (kv_idx * (K::kv_height/kittens::TILE_DIM)); 
 
                 #pragma unroll
                 for(int _ = 0; k_blk == (kv_iters-1)*(K::kv_height/kittens::TILE_DIM) || k_blk == (kv_iters)*(K::kv_height/kittens::TILE_DIM); k_blk+=10000) {
@@ -225,7 +218,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             warpgroup::mma_AB(o_reg, att_block_mma, v_smem[(kv_idx)%K::stages]);
             warpgroup::mma_async_wait();
-
             if(warpgroup::laneid() == 0) arrive(compute_done[(kv_idx)%K::stages], 1);
         }
 

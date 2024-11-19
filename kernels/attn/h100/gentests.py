@@ -16,6 +16,11 @@ D = int(sys.argv[2])
 H_QO = int(sys.argv[3])
 H_KV = int(sys.argv[4])
 
+TILE_HEIGHT_Q = 256
+TILE_HEIGHT_KV = 128
+N_TILES_Q = N // TILE_HEIGHT_Q
+N_TILES_KV = N // TILE_HEIGHT_KV
+
 causal = False
 
 def make_causal_mask(N):
@@ -44,12 +49,24 @@ torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-mask = make_ones_mask(N)
-mask.requires_grad_(False)
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
 
-bias = torch.where(mask, 0.0, -1e6).to(torch.bfloat16).requires_grad_(False).contiguous()
+blocksparsity = (torch.rand((N_TILES_Q, N_TILES_KV), device='cuda') < 0.3).to(torch.bool)
 
+blocksparsity_indices = [torch.nonzero(blocksparsity[:, col], as_tuple=True)[0].to(device='cuda') for col in range(blocksparsity.size(1))]
+for i in range(len(blocksparsity_indices)):
+    desired_length = N_TILES_Q
+    current_length = blocksparsity_indices[i].numel()
+    blocksparsity_indices[i] = torch.cat((blocksparsity_indices[i], torch.tensor([-1], device='cuda').repeat(desired_length - current_length)))
+blocksparsity_indices = torch.stack(blocksparsity_indices)
+breakpoint()
+mask = torch.zeros((1, 1, N, N), dtype=torch.bool, device='cuda')
+for q_tile in range(N_TILES_Q):
+    for kv_tile in range(N_TILES_KV):
+        if blocksparsity[q_tile, kv_tile]:
+            mask[:, :, q_tile * TILE_HEIGHT_Q:(q_tile + 1) * TILE_HEIGHT_Q, kv_tile * TILE_HEIGHT_KV:(kv_tile + 1) * TILE_HEIGHT_KV] = 1
+
+print('Number of nonzero blocksparsity values:', blocksparsity.sum())
 # pad seqlen to multiple of 128
 o = scaled_dot_product_attention(q, k, v, mask, is_causal=causal, dropout_p=0.0)
 print('Expected output:', o[0][0][0][:15])
@@ -158,11 +175,15 @@ if H_QO != H_KV:
 filename += '.txt'
 
 with open(filename, 'w') as f:
-    tensors = [q, k, v, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
-    bias_idx = -1
+    tensors = [blocksparsity, blocksparsity_indices, q, k, v, o, l_vec, d_vec, grad_output, q_grad, k_grad, v_grad]
+    bs_idx = 0
+    bs_ind_idx = 1
     for i, tensor in enumerate(tensors):
         print(f'Writing tensor {i} of {len(tensors)}')
         array = tensor.to(torch.float32).flatten().detach().cpu().numpy()
-        if i == bias_idx:
-            print('# of nonzero bias values:', (array != 0).sum(), 'out of', array.size)
+        if i == bs_idx:
+            print('# of nonzero blocksparsity values:', (array != 0).sum(), 'out of', array.size)
+        elif i == bs_ind_idx:
+            array = tensor.to(torch.int32).flatten().detach().cpu().numpy()
+            print('# of nonzero blocksparsity indices:', (array != -1).sum(), 'out of', array.size)
         f.write(' '.join(map(str, array)) + ' \n')
