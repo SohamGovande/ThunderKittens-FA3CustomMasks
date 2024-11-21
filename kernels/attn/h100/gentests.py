@@ -45,20 +45,26 @@ def make_randomly_striped_mask(N):
 def make_ones_mask(N):
     return torch.ones((1, 1, N, N), device='cuda', dtype=torch.bool)
 
+def bool_matrix_to_indices(blocksparsity: torch.Tensor) -> torch.Tensor:
+    col_indices = torch.arange(N_TILES_KV, device=blocksparsity.device).unsqueeze(0).expand(N_TILES_Q, N_TILES_KV)
+    placeholder = N_TILES_KV
+    assigned_indices = torch.where(blocksparsity, col_indices, torch.full_like(col_indices, placeholder))
+    sorted_indices, _ = torch.sort(assigned_indices, dim=1)
+    blocksparsity_indices = torch.where(sorted_indices < N_TILES_KV, sorted_indices, torch.full_like(sorted_indices, -1))
+    return blocksparsity_indices
+
 torch.random.manual_seed(42)
 q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
-
 blocksparsity = (torch.rand((N_TILES_Q, N_TILES_KV), device='cuda') < 0.3).to(torch.bool)
-
-blocksparsity_indices = torch.full((N_TILES_Q, N_TILES_KV), -1, dtype=torch.int, device='cuda')
-for q_tile in range(N_TILES_Q):
-    blocksparsity_indices[q_tile, :blocksparsity[q_tile].sum()] = torch.nonzero(blocksparsity[q_tile], as_tuple=False).flatten()
-
-breakpoint()
+blocksparsity_indices = bool_matrix_to_indices(blocksparsity)
+assert blocksparsity_indices.shape == blocksparsity.shape, "blocksparsity_indices shape does not match blocksparsity shape"
 mask = torch.zeros((1, 1, N, N), dtype=torch.bool, device='cuda')
+blocksparsity_indices += (blocksparsity_indices != -1).to(torch.int32) * 0
+blocksparsity_indices = torch.min(blocksparsity_indices, torch.full_like(blocksparsity_indices, N_TILES_KV - 1))
+# breakpoint()
 for q_tile in range(N_TILES_Q):
     for kv_tile in range(N_TILES_KV):
         if blocksparsity[q_tile, kv_tile]:

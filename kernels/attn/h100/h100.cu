@@ -142,7 +142,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         rt_fl<16, K::kv_height>  att_block;
         rt_bf<16, K::kv_height>  att_block_mma;
         rt_fl<16, K::tile_width> o_reg;
-        
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
         
         neg_infty(max_vec);
@@ -196,7 +195,14 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         div_row(o_reg, o_reg, norm_vec);
         warpgroup::store(o_smem[warpgroupid], o_reg); 
         warpgroup::sync(warpgroupid+4);
-
+        for (int j = 0; j < K::tile_width / 16; j++) {
+            for (int i = 0; i < 8; i++) {
+                float2 data = o_reg.tiles[0][j].data[i];
+                if (data.x == 0.020874f || data.y == 0.020874f) {
+                    int bkpt = 0;
+                }
+            }
+        }
         if (warpid % 4 == 0) {
             int4 o_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + warpgroupid, 0};
             tma::store_async(g.o, o_smem[warpgroupid], o_tile_idx);
