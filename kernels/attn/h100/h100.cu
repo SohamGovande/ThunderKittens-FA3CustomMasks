@@ -75,6 +75,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
     int *indices_ptr = g.bs_indices;
+    bool should_print = blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && warpgroup::laneid() == 0 && threadIdx.y == 0 && threadIdx.z == 0;
 
     __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
     // if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
@@ -100,9 +101,15 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         for (int index = 0; index < K::stages - 1; index++) {
-            // int j = index;
-            int j = indices_ptr[blockIdx.x * (kv_blocks/2) + index];
+            int j = index;
+            int kv_idx_test = indices_ptr[blockIdx.x * kv_blocks + index];
+            // int j = indices_ptr[blockIdx.x * (kv_blocks/2) + index];
+            if (should_print) {
+                printf("index = %d, kv_idx_test = %d, kv_blocks = %d\n", index, kv_idx_test, kv_blocks);
+            }
             if (j == -1) { break; }
+
+
             // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
             //     printf("indices_ptr[%2d] = %2d\n", blockIdx.x * (kv_blocks/2) + index, j);
             // }
@@ -115,8 +122,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     }
     __syncthreads(); 
 
-    int pipe_idx = K::stages - 1; 
-    
     if(warpgroupid == NUM_WARPGROUPS-1) {
         warpgroup::decrease_registers<32>();      
         
@@ -128,18 +133,24 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         else { kv_iters = kv_blocks-2; }
 
         if(warpid == NUM_WORKERS-4) {
-            for (auto index = pipe_idx - 1; index <= kv_iters; index++) {
-                int kv_idx = indices_ptr[blockIdx.x * (kv_blocks/2) + index];
+            for (auto index = K::stages - 1; index <= kv_iters + 1; index++) {
+                int kv_idx_test = indices_ptr[blockIdx.x * kv_blocks + index];
+
+                if (should_print) {
+                    printf("index = %d, kv_idx_test = %d\n", index, kv_idx_test);
+                }
+                int kv_idx = index;
+                int kv_idx_prev = index - 1;
                 if (kv_idx == -1) { break; }
                 // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
                 //     printf("indices_ptr[%2d] = %2d\n", blockIdx.x * (kv_blocks/2) + index, kv_idx);
                 // }    
-                int4 kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
-                tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
-                tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
-                tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
-                tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);                    
-                wait(compute_done[(kv_idx)%K::stages], ((kv_idx)/K::stages)%2);
+                int4 kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx, 0};
+                tma::expect_bytes(k_smem_arrived[(kv_idx)%K::stages], sizeof(k_tile));
+                tma::load_async(k_smem[(kv_idx)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx)%K::stages]);
+                tma::expect_bytes(v_smem_arrived[(kv_idx)%K::stages], sizeof(v_tile));
+                tma::load_async(v_smem[(kv_idx)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx)%K::stages]);                    
+                wait(compute_done[(kv_idx_prev)%K::stages], ((kv_idx_prev)/K::stages)%2);
             }
         }
     }

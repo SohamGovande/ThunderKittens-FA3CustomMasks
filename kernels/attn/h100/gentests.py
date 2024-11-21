@@ -53,12 +53,10 @@ grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')
 
 blocksparsity = (torch.rand((N_TILES_Q, N_TILES_KV), device='cuda') < 0.3).to(torch.bool)
 
-blocksparsity_indices = [torch.nonzero(blocksparsity[:, col], as_tuple=True)[0].to(device='cuda') for col in range(blocksparsity.size(1))]
-for i in range(len(blocksparsity_indices)):
-    desired_length = N_TILES_Q
-    current_length = blocksparsity_indices[i].numel()
-    blocksparsity_indices[i] = torch.cat((blocksparsity_indices[i], torch.tensor([-1], device='cuda').repeat(desired_length - current_length)))
-blocksparsity_indices = torch.stack(blocksparsity_indices)
+blocksparsity_indices = torch.full((N_TILES_Q, N_TILES_KV), -1, dtype=torch.int, device='cuda')
+for q_tile in range(N_TILES_Q):
+    blocksparsity_indices[q_tile, :blocksparsity[q_tile].sum()] = torch.nonzero(blocksparsity[q_tile], as_tuple=False).flatten()
+
 breakpoint()
 mask = torch.zeros((1, 1, N, N), dtype=torch.bool, device='cuda')
 for q_tile in range(N_TILES_Q):
