@@ -23,28 +23,6 @@ N_TILES_KV = N // TILE_HEIGHT_KV
 
 causal = False
 
-def make_causal_mask(N):
-    return torch.tril(torch.ones((1, 1, N, N), device='cuda', dtype=torch.bool))
-
-def make_randn_mask(N):
-    return torch.randint(0, 2, (1, 1, N, N), dtype=torch.bool, device='cuda')
-
-def make_striped_mask(N):
-    mask = torch.zeros((1, 1, N, N), device='cuda', dtype=torch.bool)
-    mask[:, :, ::2, 1::2] = 1
-    mask[:, :, 1::2, ::2] = 1
-    return mask
-
-def make_randomly_striped_mask(N):
-    mask = torch.zeros((1, 1, N, N), device='cuda', dtype=torch.bool)
-    sections = torch.randperm(N * N).reshape(N, N)
-    sections = sections < (N * N // 4)
-    mask[:, :, sections] = 1
-    return mask
-
-def make_ones_mask(N):
-    return torch.ones((1, 1, N, N), device='cuda', dtype=torch.bool)
-
 def bool_matrix_to_indices(blocksparsity: torch.Tensor) -> torch.Tensor:
     col_indices = torch.arange(N_TILES_KV, device=blocksparsity.device).unsqueeze(0).expand(N_TILES_Q, N_TILES_KV)
     placeholder = N_TILES_KV
@@ -58,10 +36,9 @@ q = (torch.empty((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda').normal_(m
 k = (torch.empty((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda').normal_(mean=0.0, std=0.5).requires_grad_())
 v = (torch.empty((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda').normal_(mean=0.0, std=0.5).requires_grad_())
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
-blocksparsity = torch.rand((N_TILES_Q, N_TILES_KV), device="cuda") > 0.3
+blocksparsity = torch.rand((N_TILES_Q, N_TILES_KV), device="cuda") > 0.8
 blocksparsity_indices = torch.arange(0, N_TILES_KV, device="cuda")[None, :].expand(N_TILES_Q, -1).where(blocksparsity, N_TILES_KV + 10).sort(dim=-1).values.to(torch.int16)
 blocksparsity_indices = torch.where(blocksparsity_indices == N_TILES_KV + 10, -1, blocksparsity_indices)
-breakpoint()
 
 assert blocksparsity_indices.shape == blocksparsity.shape, "blocksparsity_indices shape does not match blocksparsity shape"
 blocksparsity_indices += (blocksparsity_indices != -1).to(torch.int32) * 0
