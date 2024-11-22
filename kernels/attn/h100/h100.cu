@@ -100,7 +100,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         for (int kv_idx = 0; kv_idx < K::stages - 1; kv_idx++) {
             int real_kv_data_idx = indices_ptr[blockIdx.x * kv_blocks + kv_idx];
             // int kv_idx = indices_ptr[blockIdx.x * (kv_blocks/2) + kv_idx];
-            PRINT("pushing kv_idx = %d, real_kv_data_idx = %d, kv_blocks = %d\n", kv_idx, real_kv_data_idx, kv_blocks);
             if (real_kv_data_idx == -1) { break; }
 
             // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
@@ -125,14 +124,11 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
                 int kv_idx_prev = kv_idx - 1;
                 int4 kv_tile_idx = {blockIdx.z, kv_head_idx, real_kv_data_idx, 0};
-                PRINT("pushing kv_idx = %d, real_kv_data_idx = %d\n", kv_idx, real_kv_data_idx);
                 tma::expect_bytes(k_smem_arrived[(kv_idx)%K::stages], sizeof(k_tile));
                 tma::load_async(k_smem[(kv_idx)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx)%K::stages]);
                 tma::expect_bytes(v_smem_arrived[(kv_idx)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx)%K::stages]);           
-                PRINT("waiting for kv_idx = %d\n", kv_idx_prev);
                 wait(compute_done[(kv_idx_prev)%K::stages], ((kv_idx_prev)/K::stages)%2);
-                PRINT("done waiting for kv_idx = %d\n", kv_idx_prev);
             }
         }
     }
@@ -188,14 +184,13 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             warpgroup::mma_AB(o_reg, att_block_mma, v_smem[(kv_idx)%K::stages]);
             warpgroup::mma_async_wait();
-            PRINT("finished computing kv_idx = %d\n", kv_idx);
             if(warpgroup::laneid() == 0) arrive(compute_done[(kv_idx)%K::stages], 1);
         }
 
         div_row(o_reg, o_reg, norm_vec);
         warpgroup::store(o_smem[warpgroupid], o_reg); 
         warpgroup::sync(warpgroupid+4);
-        
+
         if (warpid % 4 == 0) {
             int4 o_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + warpgroupid, 0};
             tma::store_async(g.o, o_smem[warpgroupid], o_tile_idx);
