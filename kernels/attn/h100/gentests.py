@@ -16,7 +16,7 @@ D = int(sys.argv[2])
 H_QO = int(sys.argv[3])
 H_KV = int(sys.argv[4])
 
-TILE_HEIGHT_Q = 256
+TILE_HEIGHT_Q = 192
 TILE_HEIGHT_KV = 128
 N_TILES_Q = N // TILE_HEIGHT_Q
 N_TILES_KV = N // TILE_HEIGHT_KV
@@ -53,30 +53,24 @@ def bool_matrix_to_indices(blocksparsity: torch.Tensor) -> torch.Tensor:
     blocksparsity_indices = torch.where(sorted_indices < N_TILES_KV, sorted_indices, torch.full_like(sorted_indices, -1))
     return blocksparsity_indices
 
-torch.random.manual_seed(42)
-q = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-k = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
-v = (torch.randn((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda')).requires_grad_()
+torch.random.manual_seed(20)
+q = (torch.empty((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda').normal_(mean=0.0, std=0.5).requires_grad_())
+k = (torch.empty((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda').normal_(mean=0.0, std=0.5).requires_grad_())
+v = (torch.empty((B, H_KV, N, D), dtype=torch.bfloat16, device='cuda').normal_(mean=0.0, std=0.5).requires_grad_())
 grad_output = (torch.randn((B, H_QO, N, D), dtype=torch.bfloat16, device='cuda'))
-blocksparsity = (torch.rand((N_TILES_Q, N_TILES_KV), device='cuda') < 0.3).to(torch.bool)
-blocksparsity_indices = bool_matrix_to_indices(blocksparsity)
+blocksparsity = torch.rand((N_TILES_Q, N_TILES_KV), device="cuda") > 0.3
+blocksparsity_indices = torch.arange(0, N_TILES_KV, device="cuda")[None, :].expand(N_TILES_Q, -1).where(blocksparsity, N_TILES_KV + 10).sort(dim=-1).values.to(torch.int16)
+blocksparsity_indices = torch.where(blocksparsity_indices == N_TILES_KV + 10, -1, blocksparsity_indices)
+breakpoint()
+
 assert blocksparsity_indices.shape == blocksparsity.shape, "blocksparsity_indices shape does not match blocksparsity shape"
-mask = torch.zeros((1, 1, N, N), dtype=torch.bool, device='cuda')
 blocksparsity_indices += (blocksparsity_indices != -1).to(torch.int32) * 0
 blocksparsity_indices = torch.min(blocksparsity_indices, torch.full_like(blocksparsity_indices, N_TILES_KV - 1))
-# breakpoint()
-for q_tile in range(N_TILES_Q):
-    for kv_tile in range(N_TILES_KV):
-        if blocksparsity[q_tile, kv_tile]:
-            mask[:, :, q_tile * TILE_HEIGHT_Q:(q_tile + 1) * TILE_HEIGHT_Q, kv_tile * TILE_HEIGHT_KV:(kv_tile + 1) * TILE_HEIGHT_KV] = 1
-
 print('Number of nonzero blocksparsity values:', blocksparsity.sum())
+
 # pad seqlen to multiple of 128
-o = scaled_dot_product_attention(q, k, v, mask, is_causal=causal, dropout_p=0.0)
+o = scaled_dot_product_attention(q, k, v, attn_mask=None, is_causal=causal)
 print('Expected output:', o[0][0][0][:15])
-if not mask.all():
-    o_without_mask = scaled_dot_product_attention(q, k, v, is_causal=causal, dropout_p=0.0)
-    print(f'Difference between masked and unmasked output: {(o - o_without_mask)[0][0][0][:15]}')
 # o, _ = scaled_dot_product_gqa(
 #     q.permute(0, 2, 1, 3).contiguous(),
 #     k.permute(0, 2, 1, 3).contiguous(),

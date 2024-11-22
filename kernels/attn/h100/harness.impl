@@ -7,14 +7,14 @@ Full Launch Command
 python gentests.py 3072 64 24 24 && make clean && make && ./attn randn_3072N_64D_24QO_24KV.txt
 */
 
-constexpr int ATTN_B = 16;
-constexpr int QO_HEADS = 24;
-constexpr int KV_HEADS = 24;
+constexpr int ATTN_B = 1;
+constexpr int QO_HEADS = 1;
+constexpr int KV_HEADS = 1;
 
 constexpr int QK_HEAD_RATIO = (QO_HEADS) / (KV_HEADS);
 static_assert(QO_HEADS >= KV_HEADS && QO_HEADS % KV_HEADS == 0);
 
-constexpr int ATTN_N = 3072;
+constexpr int ATTN_N = 3072 * 15;
 constexpr int ATTN_D = 64;
 constexpr int BLOCK_SIZE = (32 * NUM_WORKERS);
 constexpr int ITER = 1;
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
     constexpr int TOTAL_ELEMENTS_KV     = ATTN_B*KV_HEADS*ATTN_N*ATTN_D;
     constexpr int TOTAL_UNIQUE_ELEMENTS = ATTN_N*ATTN_D; 
 
-    constexpr int BLOCKSPARSITY_WIDTH = (ATTN_N / 256);
+    constexpr int BLOCKSPARSITY_WIDTH = (ATTN_N / 192);
     constexpr int BLOCKSPARSITY_HEIGHT = (ATTN_N / 128);
     std::cout << "Block sparsity width: " << BLOCKSPARSITY_WIDTH << std::endl;
     std::cout << "Block sparsity height: " << BLOCKSPARSITY_HEIGHT << std::endl;

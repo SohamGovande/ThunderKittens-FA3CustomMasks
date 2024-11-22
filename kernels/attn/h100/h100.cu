@@ -195,14 +195,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         div_row(o_reg, o_reg, norm_vec);
         warpgroup::store(o_smem[warpgroupid], o_reg); 
         warpgroup::sync(warpgroupid+4);
-        for (int j = 0; j < K::tile_width / 16; j++) {
-            for (int i = 0; i < 8; i++) {
-                float2 data = o_reg.tiles[0][j].data[i];
-                if (data.x == 0.020874f || data.y == 0.020874f) {
-                    int bkpt = 0;
-                }
-            }
-        }
+        
         if (warpid % 4 == 0) {
             int4 o_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + warpgroupid, 0};
             tma::store_async(g.o, o_smem[warpgroupid], o_tile_idx);

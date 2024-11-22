@@ -15,8 +15,11 @@ def analyze_differences(file1, file2, threshold=0.001):
     running_sum = 0
     running_sums = []
     
+    indices = []
     for index, (num1, num2) in enumerate(zip(numbers1, numbers2)):
         this_diff_exceeds = abs(num1 - num2) >= threshold
+        if abs(num1 - 0.020874) < 0.001:
+            indices.append(index)
         if index == 12500:
             print(f"#{index}: {num1} {num2}")
         running_sum += 1
@@ -26,7 +29,7 @@ def analyze_differences(file1, file2, threshold=0.001):
         else:
             counts[-1] += 1
         last_diff_exceeds = this_diff_exceeds
-
+    # print("indices: ", ", ".join(map(str, indices)))
     return counts, running_sums  # Return None if no such difference is found
 
 def main():
