@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <sstream>
+#include <vector>
 
 /*
 Full Launch Command
@@ -8,13 +10,14 @@ python gentests.py 3072 64 24 24 && make clean && make && ./attn randn_3072N_64D
 */
 
 constexpr int ATTN_B = 1;
-constexpr int QO_HEADS = 1;
-constexpr int KV_HEADS = 1;
+
+constexpr int ATTN_N = 3072 * 15;
+constexpr int QO_HEADS = ATTN_N > 40000 ? 1 : 24;
+constexpr int KV_HEADS = QO_HEADS;
 
 constexpr int QK_HEAD_RATIO = (QO_HEADS) / (KV_HEADS);
 static_assert(QO_HEADS >= KV_HEADS && QO_HEADS % KV_HEADS == 0);
 
-constexpr int ATTN_N = 3072 * 15;
 constexpr int ATTN_D = 64;
 constexpr int BLOCK_SIZE = (32 * NUM_WORKERS);
 constexpr int ITER = 1;
@@ -78,8 +81,8 @@ int main(int argc, char **argv) {
     constexpr int TOTAL_ELEMENTS_KV     = ATTN_B*KV_HEADS*ATTN_N*ATTN_D;
     constexpr int TOTAL_UNIQUE_ELEMENTS = ATTN_N*ATTN_D; 
 
-    constexpr int BLOCKSPARSITY_WIDTH = (ATTN_N / 192);
-    constexpr int BLOCKSPARSITY_HEIGHT = (ATTN_N / 128);
+    constexpr int BLOCKSPARSITY_WIDTH = (ATTN_N / (CONSUMER_WARPGROUPS * fwd_attend_ker_tile_dims<ATTN_D>::qo_height));
+    constexpr int BLOCKSPARSITY_HEIGHT = (ATTN_N / fwd_attend_ker_tile_dims<ATTN_D>::kv_height);
     std::cout << "Block sparsity width: " << BLOCKSPARSITY_WIDTH << std::endl;
     std::cout << "Block sparsity height: " << BLOCKSPARSITY_HEIGHT << std::endl;
     constexpr int TOTAL_ELEMENTS_BLOCKSPARSITY = BLOCKSPARSITY_WIDTH * BLOCKSPARSITY_HEIGHT;
@@ -125,7 +128,32 @@ int main(int argc, char **argv) {
     float *kg = new float[TOTAL_ELEMENTS_KV];
     float *vg = new float[TOTAL_ELEMENTS_KV];
 
-    std::ifstream infile(argv[1]);
+    std::string filename = argv[1];
+    std::cout << "Filename: " << filename << std::endl;
+    std::vector<int> values;
+    std::stringstream ss(filename);
+    std::string item;
+    while (std::getline(ss, item, '_')) {
+        while (item.size() > 0 && !isdigit(item.back())) {
+            item.pop_back();
+        }
+        if (item.size() > 0) {
+            values.push_back(std::stoi(item));
+        }
+    }
+
+    if (values.size() != 4) {
+        std::cerr << "Error: Expected 4 values in the filename. Got " << values.size() << std::endl;
+        return 1;
+    }
+    if (values != std::vector<int>{ATTN_N, ATTN_D, QO_HEADS, KV_HEADS}) {
+        std::cerr << "Expected: ATTN_N=" << ATTN_N << " ATTN_D=" << ATTN_D << " QO_HEADS=" << QO_HEADS << " KV_HEADS=" << KV_HEADS << std::endl;
+        std::cerr << "Got: ATTN_N=" << values[0] << " ATTN_D=" << values[1] << " QO_HEADS=" << values[2] << " KV_HEADS=" << values[3] << std::endl;
+        std::cerr << "Error: values do not match [ATTN_N, ATTN_D, QO_HEADS, KV_HEADS]. " << std::endl;
+        return 1;
+    }
+
+    std::ifstream infile(filename);
 
     std::cout << "Starting to enter!" << std::endl;
     int count = 0;
@@ -258,8 +286,16 @@ int main(int argc, char **argv) {
     
     // check correctness
     cudaMemcpy(o_bf, d_o, TOTAL_ELEMENTS_QO * sizeof(bf16), cudaMemcpyDeviceToHost);
+    bool has_nonzero_os = false;
     for(int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
         o[i] = __bfloat162float(o_bf[i]);
+        if (abs(o[i]) > 0.01) {
+            has_nonzero_os = true;
+        }
+    }
+    if (!has_nonzero_os) {
+        std::cout << "All o's are zero :(" << std::endl;
+        return 1;
     }
     cudaMemcpy(l_fl, d_l, TOTAL_ELEMENTS_QO/ATTN_D * sizeof(float), cudaMemcpyDeviceToHost);
     for (int i = 0; i < TOTAL_ELEMENTS_QO/ATTN_D; i++) {
@@ -288,6 +324,14 @@ int main(int argc, char **argv) {
             max_error = abs(diff);
         }
     }
+    float dist = 0;
+    for (int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
+        float diff = o[i] - o_ref[i % (TOTAL_ELEMENTS_QO/ATTN_B)];
+        dist += diff * diff;
+    }
+    dist = sqrt(dist);
+    std::cout << "L2 distance between output and reference: " << dist << std::endl;
+
 
     // print average difference
     std::cout << "Average o difference: " << total_diff / TOTAL_ELEMENTS_QO << std::endl;
