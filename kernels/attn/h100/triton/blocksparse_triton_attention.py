@@ -27,8 +27,8 @@ def sdpa_attn_ctx():
 DTYPE = torch.bfloat16
 # DTYPE = torch.float16
 
-G_BM = 192
-G_BN = 128
+G_BM = 64
+G_BN = 32
 
 
 def is_hip():

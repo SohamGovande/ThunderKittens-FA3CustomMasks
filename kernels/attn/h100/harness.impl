@@ -20,7 +20,7 @@ static_assert(QO_HEADS >= KV_HEADS && QO_HEADS % KV_HEADS == 0);
 
 constexpr int ATTN_D = 64;
 constexpr int BLOCK_SIZE = (32 * NUM_WORKERS);
-constexpr int ITER = 1;
+constexpr int ITER = 10;
 
 constexpr bool causal = false;
 
@@ -273,6 +273,10 @@ int main(int argc, char **argv) {
 
     dim3 grid(ATTN_N/(CONSUMER_WARPGROUPS*kittens::TILE_DIM*4), QO_HEADS, ATTN_B);
     static_assert(ATTN_N % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0);
+    std::cout << "Starting warmup" << std::endl;
+    for(int i = 0; i < 10; i++) {
+        fwd_attend_ker<ATTN_D, causal><<<grid, BLOCK_SIZE, mem_size>>>(g);
+    }
     cudaDeviceSynchronize();
     std::cout << "Starting kernel" << std::endl;
     const auto start = std::chrono::high_resolution_clock::now();
