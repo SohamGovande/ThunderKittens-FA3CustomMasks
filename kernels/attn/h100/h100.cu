@@ -74,18 +74,21 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
-    
+
     int kv_blocks   = g.N / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS; 
-    BsIndexType *indices_ptr = g.bs_indices;
-    bool should_print = blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && warpgroup::laneid() == 0 && threadIdx.y == 0 && threadIdx.z == 0;
+
+    __shared__ BsIndexType indices_ptr[400];
 
     __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
     
     __syncthreads();
     if (threadIdx.x == 0) { 
         init_semaphore(qsmem_semaphore, 0, 1); 
+        for (int kv_idx = 0; kv_idx < kv_blocks; kv_idx++) {
+            indices_ptr[kv_idx] = g.bs_indices[blockIdx.x * kv_blocks + kv_idx];
+        }
         for(int kv_idx = 0; kv_idx < K::stages; kv_idx++) {
             init_semaphore(k_smem_arrived[kv_idx], 0, 1); 
             init_semaphore(v_smem_arrived[kv_idx], 0, 1); 
@@ -100,13 +103,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         for (int kv_idx = 0; kv_idx < K::stages - 1; kv_idx++) {
-            BsIndexType real_kv_data_idx = indices_ptr[blockIdx.x * kv_blocks + kv_idx];
-            // int kv_idx = indices_ptr[blockIdx.x * (kv_blocks/2) + kv_idx];
+            BsIndexType real_kv_data_idx = indices_ptr[kv_idx];
             if (real_kv_data_idx == -1) { break; }
 
-            // if (kittens::laneid() == 0 && blockIdx.x == 1 && blockIdx.y == 0) {
-            //     printf("indices_ptr[%2d] = %2d\n", blockIdx.x * (kv_blocks/2) + kv_idx, kv_idx);
-            // }
             int4 kv_tile_idx = {blockIdx.z, kv_head_idx, real_kv_data_idx, 0};
             tma::expect_bytes(k_smem_arrived[kv_idx], sizeof(k_tile));
             tma::load_async(k_smem[kv_idx], g.k, kv_tile_idx, k_smem_arrived[kv_idx]);
@@ -121,7 +120,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         
         if(warpid == NUM_WORKERS-4) {
             for (auto kv_idx = K::stages - 1; kv_idx < kv_blocks; kv_idx++) {
-                BsIndexType real_kv_data_idx = indices_ptr[blockIdx.x * kv_blocks + kv_idx];
+                BsIndexType real_kv_data_idx = indices_ptr[kv_idx];
                 if (real_kv_data_idx == -1) { break; }
 
                 int kv_idx_prev = kv_idx - 1;
@@ -149,7 +148,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(qsmem_semaphore, 0);
 
         for (auto kv_idx = 0; kv_idx < kv_blocks; kv_idx++) {
-            BsIndexType real_kv_data_idx = indices_ptr[blockIdx.x * kv_blocks + kv_idx];
+            BsIndexType real_kv_data_idx = indices_ptr[kv_idx];
             if (real_kv_data_idx == -1) { break; }
 
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
