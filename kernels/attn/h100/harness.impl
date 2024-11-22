@@ -67,6 +67,10 @@ double efficiency(long long flop, double time) {
     return tflops / time_ms;
 }
 
+
+// Make sure this is the same in h100.cu
+using BsIndexType = unsigned int;
+
 int main(int argc, char **argv) {
     std::cout << "Entered main!" << std::endl;
 
@@ -87,8 +91,8 @@ int main(int argc, char **argv) {
     std::cout << "Block sparsity height: " << BLOCKSPARSITY_HEIGHT << std::endl;
     constexpr int TOTAL_ELEMENTS_BLOCKSPARSITY = BLOCKSPARSITY_WIDTH * BLOCKSPARSITY_HEIGHT;
 
-    int *bs                 = new int[TOTAL_ELEMENTS_BLOCKSPARSITY];
-    int *bs_indices         = new int[TOTAL_ELEMENTS_BLOCKSPARSITY];
+    bool *bs                 = new bool[TOTAL_ELEMENTS_BLOCKSPARSITY];
+    BsIndexType *bs_indices         = new  BsIndexType[TOTAL_ELEMENTS_BLOCKSPARSITY];
 
     float *q      = new float[TOTAL_ELEMENTS_QO];
     float *k      = new float[TOTAL_ELEMENTS_KV];
@@ -214,7 +218,8 @@ int main(int argc, char **argv) {
     bf16 *d_q, *d_k, *d_v, *d_o, *d_og; 
     float *d_l, *d_d;
     float *d_qg, *d_kg, *d_vg;
-    int *d_blocksparsity, *d_blocksparsity_indices;
+    bool *d_blocksparsity;
+    BsIndexType *d_blocksparsity_indices;
 
     cudaMalloc(&d_q, (TOTAL_ELEMENTS_QO) * sizeof(bf16));
     cudaMalloc(&d_k, (TOTAL_ELEMENTS_KV) * sizeof(bf16));
@@ -239,11 +244,11 @@ int main(int argc, char **argv) {
     cudaMemcpy(d_kg, kg_fl, TOTAL_ELEMENTS_KV * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_vg, vg_fl, TOTAL_ELEMENTS_KV * sizeof(float), cudaMemcpyHostToDevice);
 
-    cudaMalloc(&d_blocksparsity_indices, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(int));
-    cudaMemcpy(d_blocksparsity_indices, bs_indices, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_blocksparsity_indices, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(BsIndexType));
+    cudaMemcpy(d_blocksparsity_indices, bs_indices, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(BsIndexType), cudaMemcpyHostToDevice);
     
-    cudaMalloc(&d_blocksparsity, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(bf16));
-    cudaMemcpy(d_blocksparsity, bs, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(bf16), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_blocksparsity, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(bool));
+    cudaMemcpy(d_blocksparsity, bs, TOTAL_ELEMENTS_BLOCKSPARSITY * sizeof(bool), cudaMemcpyHostToDevice);
 
     using q_global = gl<bf16,  -1, -1, -1, -1, q_tile>;
     using k_global = gl<bf16,  -1, -1, -1, -1, k_tile>;
@@ -295,7 +300,7 @@ int main(int argc, char **argv) {
     bool has_nonzero_os = false;
     for(int i = 0; i < TOTAL_ELEMENTS_QO; i++) {
         o[i] = __bfloat162float(o_bf[i]);
-        if (abs(o[i]) > 0.01) {
+        if (abs(o[i]) > 0.0001) {
             has_nonzero_os = true;
         }
     }
